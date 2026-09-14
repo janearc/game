@@ -18,8 +18,8 @@ else. no makefile: `sh bootstrap.sh install` once, then game builds game.
     game version   which commit this binary is, and how old
 
 settings: `~/.config/game/config`, then `.game` in the repository, one
-per line: `author`, `words`, `public`, `exclude`. the repository's win,
-except the word list. the window a build will one day draw in is
-another program's job; this is the part that runs anywhere.
+per line: `author`, `words`, `public`, `exclude`, `lint`. the
+repository's win, except the word list. `example/config` is a start.
+the window a build will one day draw in is another program's job.
 
 game. just too stupid not to be pretty. let's build forward.

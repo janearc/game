@@ -20,7 +20,14 @@ func TestRun(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# x\n\nwow!\n\n```\nfine!\n```\n"+wide+"\n| "+wide+" |\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "wide.go"), []byte("package main\n\n// "+wide+"\nfunc wide() { _ = \""+wide+"\" }\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "tall", "README.md"), []byte(strings.Repeat("x\n", 26)), 0o644)
-	fs, err := Run(dir)
+	l, err := Describe([]struct {
+		Name string
+		Args []string
+	}{{"width", []string{"80"}}, {"rows", []string{"25"}}, {"comments", nil}, {"print", nil}, {"exclaim", nil}, {"shout", nil}, {"words", []string{"blazing" + "-fast"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, err := l.Run(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +37,7 @@ func TestRun(t *testing.T) {
 	}
 	// width: the doc's wide line fails, its table row does not; the
 	// wide comment fails, the wide code line is only a look.
-	want := map[string]int{"uncommented": 1, "bare print": 1, "buzzword": 1, "exclamation": 1, "shouting": 1, "width": 3, "height": 1}
+	want := map[string]int{"uncommented": 1, "bare print": 1, "word": 1, "exclamation": 1, "shouting": 1, "width": 3, "height": 1}
 	for rule, n := range want {
 		if got[rule] != n {
 			t.Errorf("%s: got %d want %d; all: %v", rule, got[rule], n, fs)
@@ -51,5 +58,19 @@ func TestRun(t *testing.T) {
 	only := []Finding{{Rule: "shouting", Look: true}}
 	if Failed(only) {
 		t.Error("a look failed the lint")
+	}
+}
+
+// nothing described is no lint at all, and a bad rule is an error.
+func TestDescribe(t *testing.T) {
+	l, err := Describe(nil)
+	if err != nil || !l.Empty() {
+		t.Fatalf("empty: %+v %v", l, err)
+	}
+	if _, err := Describe([]struct {
+		Name string
+		Args []string
+	}{{"width", []string{"wide"}}}); err == nil {
+		t.Error("a bad width described")
 	}
 }

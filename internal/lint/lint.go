@@ -1,12 +1,14 @@
-// Package lint is the house rules that a machine can check: every
-// function commented on the line above it; no bare print outside
-// package main, since a daemon logs and a library returns; no
-// buzzwords; no exclamation marks in docs; eighty columns for prose,
-// which is docs and comments, with wider code reported to look at,
-// since a struct tag or a long string can be the good reason; and
-// shouty capitals in comments, reported rather than failed, because
-// MUST and JSON are allowed to shout. go vet and gofmt are check's;
-// staticcheck runs here if it is on the path.
+// Package lint runs whatever lint is described: the rules are lines
+// in the dotfile or the repository's .game, and game has no opinions
+// of its own. what a rule can be: every function commented on the
+// line above it; no bare print outside package main, since a daemon
+// logs and a library returns; banned words; no exclamation marks in
+// docs; a width for prose, docs and comments, with wider code reported
+// to look at, since a struct tag or a long string can be the good
+// reason; a height for a readme; and shouty capitals in comments,
+// reported rather than failed, because MUST and JSON are allowed to
+// shout. go vet and gofmt are check's; staticcheck runs here if it is
+// on the path.
 package lint
 
 import (
@@ -41,10 +43,69 @@ func (f Finding) String() string {
 	return fmt.Sprintf("%s: %s:%d: %s: %s", mark, f.File, f.Line, f.Rule, f.Text)
 }
 
-// the words that are banned from code, docs and names, from the house
-// rules, and one that was said too much. assembled from pieces so this
-// file does not find itself.
-var buzzwords = regexp.MustCompile(`(?i)\b(` + strings.Join([]string{"hyper" + "scaler", "enterprise" + "-grade", "blazing" + "-fast", "blazingly" + " fast", "load" + "-bearing"}, "|") + `)\b`)
+// Lint is the rules as described, ready to run.
+type Lint struct {
+	Width    int // 0 is no rule
+	Rows     int
+	Comments bool
+	Print    bool
+	Exclaim  bool
+	Shout    bool
+	words    *regexp.Regexp
+}
+
+// Describe turns rule lines into a Lint; a bad argument is an error.
+func Describe(rules []struct {
+	Name string
+	Args []string
+}) (Lint, error) {
+	var l Lint
+	for _, r := range rules {
+		switch r.Name {
+		case "width", "rows":
+			if len(r.Args) != 1 {
+				return l, fmt.Errorf("lint %s wants one number", r.Name)
+			}
+			n := 0
+			for _, c := range r.Args[0] {
+				if c < '0' || c > '9' {
+					return l, fmt.Errorf("lint %s wants a number, not %q", r.Name, r.Args[0])
+				}
+				n = n*10 + int(c-'0')
+			}
+			if r.Name == "width" {
+				l.Width = n
+			} else {
+				l.Rows = n
+			}
+		case "comments":
+			l.Comments = true
+		case "print":
+			l.Print = true
+		case "exclaim":
+			l.Exclaim = true
+		case "shout":
+			l.Shout = true
+		case "words":
+			if len(r.Args) == 0 {
+				return l, fmt.Errorf("lint words wants at least one word")
+			}
+			quoted := make([]string, 0, len(r.Args))
+			for _, w := range r.Args {
+				quoted = append(quoted, regexp.QuoteMeta(w))
+			}
+			l.words = regexp.MustCompile(`(?i)\b(` + strings.Join(quoted, "|") + `)\b`)
+		default:
+			return l, fmt.Errorf("unknown lint %q", r.Name)
+		}
+	}
+	return l, nil
+}
+
+// Empty is whether nothing was described.
+func (l Lint) Empty() bool {
+	return l.Width == 0 && l.Rows == 0 && !l.Comments && !l.Print && !l.Exclaim && !l.Shout && l.words == nil
+}
 
 // a run of capitals that is probably shouting: five or more letters,
 // not one of the acronyms that are allowed to.
@@ -52,8 +113,8 @@ var shout = regexp.MustCompile(`\b[A-Z]{5,}\b`)
 
 var allowed = map[string]bool{"ASCII": true, "ANSI": true, "HTTPS": true, "OKLAB": true, "OKLCH": true, "JSON": true, "MUST": true, "SHALL": true, "SHOULD": true, "NOTE": true, "TODO": true, "UTF8": true, "NOLINT": true, "NOCOLOR": true, "PANIC": true}
 
-// Run lints a module rooted at dir.
-func Run(dir string) ([]Finding, error) {
+// Run lints a module rooted at dir by the rules described.
+func (l Lint) Run(dir string) ([]Finding, error) {
 	var out []Finding
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -69,13 +130,13 @@ func Run(dir string) ([]Finding, error) {
 		rel, _ := filepath.Rel(dir, path)
 		switch {
 		case strings.HasSuffix(name, ".go"):
-			f, e := goFile(path, rel)
+			f, e := l.goFile(path, rel)
 			if e != nil {
 				return e
 			}
 			out = append(out, f...)
 		case strings.HasSuffix(name, ".md"):
-			f, e := doc(path, rel)
+			f, e := l.doc(path, rel)
 			if e != nil {
 				return e
 			}
@@ -116,7 +177,7 @@ func Failed(fs []Finding) bool {
 }
 
 // goFile is the rules for one go file.
-func goFile(path, rel string) ([]Finding, error) {
+func (l Lint) goFile(path, rel string) ([]Finding, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
@@ -131,14 +192,14 @@ func goFile(path, rel string) ([]Finding, error) {
 	isMain := file.Name.Name == "main"
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok {
+		if !ok || !l.Comments {
 			continue
 		}
 		if fn.Doc == nil || strings.TrimSpace(fn.Doc.Text()) == "" {
 			out = append(out, Finding{rel, fset.Position(fn.Pos()).Line, "uncommented", fn.Name.Name + " has no comment on the line above it", false})
 		}
 	}
-	if !isMain {
+	if l.Print && !isMain {
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -157,13 +218,18 @@ func goFile(path, rel string) ([]Finding, error) {
 	}
 	src, _ := os.ReadFile(path)
 	for i, line := range strings.Split(string(src), "\n") {
-		if m := buzzwords.FindString(line); m != "" {
-			out = append(out, Finding{rel, i + 1, "buzzword", m, false})
+		if l.words != nil {
+			if m := l.words.FindString(line); m != "" {
+				out = append(out, Finding{rel, i + 1, "word", m, false})
+			}
 		}
-		if w := width(line); w > Columns {
+		if w := width(line); l.Width > 0 && w > l.Width {
 			look := !strings.HasPrefix(strings.TrimSpace(line), "//")
 			out = append(out, Finding{rel, i + 1, "width", fmt.Sprintf("%d columns", w), look})
 		}
+	}
+	if !l.Shout {
+		return out, nil
 	}
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
@@ -177,22 +243,18 @@ func goFile(path, rel string) ([]Finding, error) {
 	return out, nil
 }
 
-// Rows is the height a readme keeps to: one screen, the first page of
-// a manual, and no more.
-const Rows = 25
-
-// doc is the rules for one markdown file: no buzzwords, no exclamation
-// marks, since nothing is an emergency because nothing is an emergency;
-// eighty columns; and a readme fits one screen.
-func doc(path, rel string) ([]Finding, error) {
+// doc is the rules for one markdown file: banned words, no exclamation
+// marks, since nothing is an emergency because nothing is an emergency,
+// the width, and a readme's height.
+func (l Lint) doc(path, rel string) ([]Finding, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var out []Finding
 	lines := strings.Split(strings.TrimRight(string(src), "\n"), "\n")
-	if strings.EqualFold(filepath.Base(path), "README.md") && len(lines) > Rows {
-		out = append(out, Finding{rel, len(lines), "height", fmt.Sprintf("%d lines; a readme fits %d", len(lines), Rows), false})
+	if l.Rows > 0 && strings.EqualFold(filepath.Base(path), "README.md") && len(lines) > l.Rows {
+		out = append(out, Finding{rel, len(lines), "height", fmt.Sprintf("%d lines; a readme fits %d", len(lines), l.Rows), false})
 	}
 	code := false
 	for i, line := range lines {
@@ -203,23 +265,20 @@ func doc(path, rel string) ([]Finding, error) {
 		if code {
 			continue
 		}
-		if m := buzzwords.FindString(line); m != "" {
-			out = append(out, Finding{rel, i + 1, "buzzword", m, false})
+		if l.words != nil {
+			if m := l.words.FindString(line); m != "" {
+				out = append(out, Finding{rel, i + 1, "word", m, false})
+			}
 		}
-		if strings.Contains(line, "!") && !strings.Contains(line, "![") && !strings.Contains(line, "!=") {
+		if l.Exclaim && strings.Contains(line, "!") && !strings.Contains(line, "![") && !strings.Contains(line, "!=") {
 			out = append(out, Finding{rel, i + 1, "exclamation", strings.TrimSpace(line), false})
 		}
-		if w := width(line); w > Columns && !strings.HasPrefix(line, "|") && !strings.Contains(line, "](") {
+		if w := width(line); l.Width > 0 && w > l.Width && !strings.HasPrefix(line, "|") && !strings.Contains(line, "](") {
 			out = append(out, Finding{rel, i + 1, "width", fmt.Sprintf("%d columns", w), false})
 		}
 	}
 	return out, nil
 }
-
-// Columns is the width prose keeps to: what a reader's screen shows,
-// and what jane reads at. tables and lines with a link are let be in
-// docs, since neither wraps.
-const Columns = 80
 
 // width is a line's width in columns, tabs counted as go prints them.
 func width(line string) int {

@@ -1,0 +1,18 @@
+# game: an example ~/.config/game/config, the house vibes as a skeleton.
+# copy it, keep what you like, add what is yours: your author line for
+# the bounce, your public root, your word list for the sweep.
+
+# the lint, as described. nothing described is no lint.
+lint width 80
+lint rows 25
+lint comments
+lint print
+lint exclaim
+lint shout
+lint words hyperscaler enterprise-grade blazing-fast load-bearing
+
+# author   Your Name                 the bounce refuses this name in
+#                                    the third person
+# words    ~/.config/game/sweep.words one word per line the sweep refuses
+# public   ../project-root.git        where releases go, from the repo
+# exclude  spec-docs/                 left alone by the sweep; repeatable

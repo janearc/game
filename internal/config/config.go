@@ -22,11 +22,30 @@ type Config struct {
 	Words   string   // the sweep's word list, one per line
 	Public  string   // the public root a release goes to
 	Exclude []string // path prefixes the sweep leaves alone
+	Lint    []Rule   // the lint, as described; none described is no lint
+}
+
+// Rule is one line of lint: a name and its arguments. game knows a
+// fixed set of names; what they are set to is whoever's lint this is.
+//
+//	lint width 80          prose (docs, comments) no wider; code counted
+//	lint rows 25           a readme no taller
+//	lint comments          every function commented on the line above
+//	lint print             no fmt.Print outside package main
+//	lint exclaim           no exclamation marks in docs
+//	lint shout             capitals of five or more in comments, counted
+//	lint words a b c       words banned from code and docs
+type Rule struct {
+	Name string
+	Args []string
 }
 
 // Keys is what a file may say, and what an unknown key is measured
 // against.
-var Keys = []string{"author", "words", "public", "exclude"}
+var Keys = []string{"author", "words", "public", "exclude", "lint"}
+
+// Rules is the lint names game knows.
+var Rules = []string{"width", "rows", "comments", "print", "exclaim", "shout", "words"}
 
 // Defaults is a config for a repository with no files at all.
 func Defaults(home, repo string) Config {
@@ -89,6 +108,16 @@ func (c *Config) Parse(r interface{ Read([]byte) (int, error) }, path, home stri
 			c.Public = val
 		case "exclude":
 			c.Exclude = append(c.Exclude, val)
+		case "lint":
+			f := strings.Fields(val)
+			known := false
+			for _, r := range Rules {
+				known = known || r == f[0]
+			}
+			if !known {
+				return fmt.Errorf("%s:%d: unknown lint %q; the lints are %s", path, n, f[0], strings.Join(Rules, ", "))
+			}
+			c.Lint = append(c.Lint, Rule{Name: f[0], Args: f[1:]})
 		default:
 			return fmt.Errorf("%s:%d: unknown key %q; the keys are %s", path, n, key, strings.Join(Keys, ", "))
 		}

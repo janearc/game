@@ -9,11 +9,9 @@
 //	                              commit and the time it was built
 //	game clean [--cache]          go clean, and bin/ away; --cache also
 //	                              forgets go's build and test caches
-//	game lint [--look]            the house rules a machine can check:
-//	                              functions commented, no bare print
-//	                              outside main, no buzzwords, no
-//	                              exclamation marks in docs, 80 columns
-//	                              for prose; wide code and shouting are
+//	game lint [--look]            whatever lint the config describes,
+//	                              with `lint` lines; nothing described
+//	                              is no lint. wide code and shouting are
 //	                              counted, and listed with --look
 //	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
 //	                              lint must pass first
@@ -25,10 +23,11 @@
 // repository, one per line, the repository's winning and a flag winning
 // over both; the word list is the dotfile's alone:
 //
-//	author  Jane                        the name the bounce refuses
+//	author  Ada                         the name the bounce refuses
 //	words   ~/.config/game/sweep.words  the sweep's word list
-//	public  ../daffy-root.git           the public root, from the repo
+//	public  ../project-root.git         the public root, from the repo
 //	exclude spec-docs/                  left alone by the sweep; repeatable
+//	lint    width 80                    a lint rule; repeatable; see config
 package main
 
 import (
@@ -84,7 +83,16 @@ func main() {
 		fs := flag.NewFlagSet("lint", flag.ExitOnError)
 		look := fs.Bool("look", false, "list the things to look at, not only count them")
 		fs.Parse(os.Args[2:])
-		found, e := lint.Run(r.Dir)
+		l, e := described(cfg)
+		if e != nil {
+			err = e
+			break
+		}
+		if l.Empty() {
+			fmt.Println("lint: nothing described; add lint lines to ~/.config/game/config or .game")
+			break
+		}
+		found, e := l.Run(r.Dir)
 		if e != nil {
 			err = e
 			break
@@ -132,7 +140,10 @@ func main() {
 		}
 		// lint clean before anything leaves: a release is the one
 		// moment the house rules are not a suggestion.
-		if found, e := lint.Run(r.Dir); e != nil || lint.Failed(found) {
+		if l, e := described(cfg); e != nil {
+			err = e
+			break
+		} else if found, e := l.Run(r.Dir); e != nil || lint.Failed(found) {
 			if e == nil {
 				e = fmt.Errorf("refused: lint has things to fix; run game lint")
 			}
@@ -255,8 +266,8 @@ func age() string {
 	return fmt.Sprintf("build %s, %s old", build, time.Since(t).Round(time.Second))
 }
 
-// project is the project's name: the public root's, "daffy" for
-// daffy-root.git, since a checkout is named for whoever holds it; else
+// project is the project's name: the public root's, "thing" for
+// thing-root.git, since a checkout is named for whoever holds it; else
 // the module path's last element; else the directory.
 func project(r repo.Repo, public string) string {
 	base := filepath.Base(public)
@@ -355,4 +366,19 @@ func clean(r repo.Repo, cache bool) error {
 	}
 	fmt.Println("clean: bin/ away" + map[bool]string{true: ", caches forgotten", false: ""}[cache])
 	return nil
+}
+
+// described is the lint the config describes.
+func described(cfg config.Config) (lint.Lint, error) {
+	rules := make([]struct {
+		Name string
+		Args []string
+	}, 0, len(cfg.Lint))
+	for _, r := range cfg.Lint {
+		rules = append(rules, struct {
+			Name string
+			Args []string
+		}{r.Name, r.Args})
+	}
+	return lint.Describe(rules)
 }
