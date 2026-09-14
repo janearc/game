@@ -19,7 +19,6 @@ else, and it is not a build tool for anything bigger. no makefile:
 
 settings live in `~/.config/game/config` and in `.game` in the
 repository, one per line: `author`, `words`, `public`, `exclude`; the
-repository's win, except the word list, which is the dotfile's alone. the window a build will one day draw in
-is another program's job; this is the part that runs anywhere.
+repository's win, except the word list, which is the dotfile's alone.
 
 we chose stupid, so you can be pretty. build forward.
