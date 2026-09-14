@@ -27,7 +27,8 @@
 //	words   ~/.config/game/sweep.words  the sweep's word list
 //	public  ../project-root.git         the public root, from the repo
 //	exclude spec-docs/                  left alone by the sweep; repeatable
-//	lint    width 80                    a lint rule; repeatable; see config
+//	lint    width 80                    a lint rule; repeatable. a .game
+//	                                    that has any replaces the dotfile's
 package main
 
 import (

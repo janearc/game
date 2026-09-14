@@ -2,7 +2,8 @@
 # copy it, keep what you like, add what is yours: your author line for
 # the bounce, your public root, your word list for the sweep.
 
-# the lint, as described. nothing described is no lint.
+# the lint, as described. nothing described is no lint. a repository's
+# .game that describes any lint describes all of it, in place of this.
 lint width 80
 lint rows 25
 lint comments

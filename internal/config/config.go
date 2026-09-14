@@ -1,9 +1,11 @@
 // Package config is game's settings: one per line, "key value" or
 // "key = value", # comments, ~ for home. Two files, the dotfile in the
 // home directory and .game in the repository, folded in that order so
-// the repository's wins, with one exception: the sweep's word list is
+// the repository's wins, with two exceptions: the sweep's word list is
 // the dotfile's alone, so a repository cannot shorten what it may not
-// say. An unknown key is an error that names the file and line, because
+// say; and a repository's lint lines replace the dotfile's rather than
+// add to them, so a repository that describes any lint describes all
+// of it. An unknown key is an error that names the file and line, because
 // a misspelt key that is silently ignored is a setting that silently
 // does nothing.
 package config
@@ -56,14 +58,23 @@ func Defaults(home, repo string) Config {
 }
 
 // Load is the defaults, then the dotfile, then the repository's .game.
-// A missing file is skipped; a malformed one is an error.
+// A missing file is skipped; a malformed one is an error. A repository
+// that describes any lint describes all of it: its lint lines replace
+// the dotfile's, so a repository can say exactly which rules it holds
+// to today, and the dotfile is what a repository that says nothing
+// gets.
 func Load(home, repo string) (Config, error) {
 	c := Defaults(home, repo)
 	if err := c.fold(filepath.Join(home, ".config", "game", "config"), home, true); err != nil {
 		return c, err
 	}
+	mine := c.Lint
+	c.Lint = nil
 	if err := c.fold(filepath.Join(repo, ".game"), home, false); err != nil {
 		return c, err
+	}
+	if len(c.Lint) == 0 {
+		c.Lint = mine
 	}
 	return c, nil
 }

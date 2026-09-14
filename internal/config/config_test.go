@@ -58,7 +58,7 @@ func TestLoadOrder(t *testing.T) {
 		t.Fatalf("defaults: %+v", c)
 	}
 	os.MkdirAll(filepath.Join(home, ".config", "game"), 0o755)
-	os.WriteFile(filepath.Join(home, ".config", "game", "config"), []byte("author Ada\npublic ../a.git\nwords ~/mine\nexclude one/\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".config", "game", "config"), []byte("author Ada\npublic ../a.git\nwords ~/mine\nexclude one/\nlint width 80\nlint comments\n"), 0o644)
 	os.WriteFile(filepath.Join(repo, ".game"), []byte("public ../b.git\nwords ~/theirs\nexclude two/\n"), 0o644)
 	c, err = Load(home, repo)
 	if err != nil {
@@ -66,6 +66,14 @@ func TestLoadOrder(t *testing.T) {
 	}
 	if c.Author != "Ada" || c.Public != "../b.git" || c.Words != filepath.Join(home, "mine") || len(c.Exclude) != 2 {
 		t.Fatalf("merged: %+v", c)
+	}
+	if len(c.Lint) != 2 {
+		t.Fatalf("a repository that describes no lint should get the dotfile's two, got %v", c.Lint)
+	}
+	os.WriteFile(filepath.Join(repo, ".game"), []byte("lint print\n"), 0o644)
+	c, _ = Load(home, repo)
+	if len(c.Lint) != 1 || c.Lint[0].Name != "print" {
+		t.Fatalf("a repository's lint should replace the dotfile's, got %v", c.Lint)
 	}
 	os.WriteFile(filepath.Join(repo, ".game"), []byte("colour blue\n"), 0o644)
 	if _, err := Load(home, repo); err == nil || !strings.Contains(err.Error(), "unknown key") {
