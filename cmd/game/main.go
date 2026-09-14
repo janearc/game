@@ -422,8 +422,22 @@ func buildTarget(r repo.Repo, cfg config.Config, name string) error {
 	for i, step := range t.Steps {
 		fmt.Printf("build %s: step %d of %d: %s\n", name, i+1, len(t.Steps), strings.Join(step, " "))
 		fmt.Fprintf(logf, "== step %d: %s\n", i+1, strings.Join(step, " "))
-		cmd := exec.Command("nice", append([]string{"-n", "19"}, step...)...)
+		// a program named by a relative path is meant against the
+		// target's directory, not the shell's; nice would look from
+		// its own.
+		prog := step[0]
+		if strings.Contains(prog, "/") && !filepath.IsAbs(prog) {
+			prog = filepath.Join(t.Dir, prog)
+			if !filepath.IsAbs(prog) {
+				prog = filepath.Join(r.Dir, prog)
+			}
+		}
+		args := append([]string{"-n", "19", prog}, step[1:]...)
+		cmd := exec.Command("nice", args...)
 		cmd.Dir = t.Dir
+		if !filepath.IsAbs(cmd.Dir) {
+			cmd.Dir = filepath.Join(r.Dir, cmd.Dir)
+		}
 		cmd.Stdout, cmd.Stderr = logf, logf
 		if err := cmd.Run(); err != nil {
 			tail(logPath, 12)
