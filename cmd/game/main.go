@@ -9,6 +9,11 @@
 //	                              commit and the time it was built
 //	game clean [--cache]          go clean, and bin/ away; --cache also
 //	                              forgets go's build and test caches
+//	game lint                     the house rules a machine can check:
+//	                              functions commented, no bare print
+//	                              outside main, no buzzwords, no
+//	                              exclamation marks in docs; shouting
+//	                              in comments is reported, not failed
 //	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
 //	game bounce [RANGE]           what is staged, or a commit or range
 //	game sweep [REV]              the tree at a revision, default HEAD
@@ -36,6 +41,7 @@ import (
 
 	"github.com/janearc/game/internal/bounce"
 	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/lint"
 	"github.com/janearc/game/internal/release"
 	"github.com/janearc/game/internal/repo"
 	"github.com/janearc/game/internal/sweep"
@@ -47,11 +53,13 @@ var (
 	built = ""
 )
 
+// cwd is the repository: where game was run.
 func cwd() string {
 	d, _ := os.Getwd()
 	return d
 }
 
+// main is the verb table; each verb is a function below.
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -70,6 +78,23 @@ func main() {
 		err = check(r)
 	case "build":
 		err = buildBinaries(r)
+	case "lint":
+		fs, e := lint.Run(r.Dir)
+		if e != nil {
+			err = e
+			break
+		}
+		for _, f := range fs {
+			fmt.Println(f)
+		}
+		if lint.Failed(fs) {
+			err = fmt.Errorf("lint: %d to fix", len(fs))
+		} else if len(fs) == 0 {
+			fmt.Println("lint: clean")
+		}
+		if _, e := exec.LookPath("staticcheck"); e != nil {
+			fmt.Println("lint: staticcheck is not on the path; go install honnef.co/go/tools/cmd/staticcheck@latest")
+		}
 	case "clean":
 		fs := flag.NewFlagSet("clean", flag.ExitOnError)
 		cache := fs.Bool("cache", false, "also forget go's build and test caches, for a cold run")
@@ -181,13 +206,18 @@ func message(r repo.Repo, file, public string) (string, error) {
 // multi is a repeatable flag.
 type multi []string
 
-func (m *multi) String() string     { return strings.Join(*m, ",") }
+// String is the flag's values, joined.
+func (m *multi) String() string { return strings.Join(*m, ",") }
+
+// Set adds one more value.
 func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
+// usage is the one line to type when the verb was wrong.
 func usage() {
-	fmt.Fprintln(os.Stderr, "game check | build | clean [--cache] | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
+	fmt.Fprintln(os.Stderr, "game check | build | clean [--cache] | lint | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
 }
 
+// age is which commit this binary is and how long ago it was built.
 func age() string {
 	if built == "" {
 		return fmt.Sprintf("build %s, not stamped", build)

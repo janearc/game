@@ -38,6 +38,7 @@ func fixture(t *testing.T) (repo.Repo, string) {
 	return repo.Repo{Dir: priv}, pub
 }
 
+// count is how many commits a revision can reach.
 func count(t *testing.T, r repo.Repo, rev string) int {
 	out, err := r.Git("rev-list", "--count", rev)
 	if err != nil {
