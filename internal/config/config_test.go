@@ -80,3 +80,20 @@ func TestLoadOrder(t *testing.T) {
 		t.Fatalf("an unknown key in .game loaded: %v", err)
 	}
 }
+
+// a target is a name, a directory and steps in order; a second line
+// with the same name is the next step; a line without :: is refused.
+func TestTargets(t *testing.T) {
+	var c Config
+	src := "target ghostty ~/src/g :: ~/zig build -Doptimize=ReleaseFast\ntarget ghostty ~/src/g :: xcodebuild -scheme Ghostty\n"
+	if err := c.Parse(strings.NewReader(src), "f", "/h", true); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Targets) != 1 || c.Targets[0].Dir != "/h/src/g" || len(c.Targets[0].Steps) != 2 || c.Targets[0].Steps[0][0] != "/h/zig" {
+		t.Fatalf("got %+v", c.Targets)
+	}
+	var bad Config
+	if err := bad.Parse(strings.NewReader("target x ~/y zig build\n"), "f", "/h", true); err == nil {
+		t.Error("a target without :: parsed")
+	}
+}

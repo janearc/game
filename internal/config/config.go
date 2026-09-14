@@ -25,6 +25,21 @@ type Config struct {
 	Public  string   // the public root a release goes to
 	Exclude []string // path prefixes the sweep leaves alone
 	Lint    []Rule   // the lint, as described; none described is no lint
+	Targets []Target // builds described beyond go's own, by name
+}
+
+// Target is a build described in the config: a name, the directory it
+// runs in, and its steps in order, one per line:
+//
+//	target vt ~/src/ghostty :: ~/.local/zig/0.15.2/zig build -Demit-lib-vt
+//	target vt ~/src/ghostty :: cp zig-out/lib/libghostty-vt.a ../bin/
+//
+// game build NAME runs the steps in order, under nice so the rest of
+// the machine keeps its share, with the output kept in bin/NAME.log.
+type Target struct {
+	Name  string
+	Dir   string
+	Steps [][]string
 }
 
 // Rule is one line of lint: a name and its arguments. game knows a
@@ -44,7 +59,7 @@ type Rule struct {
 
 // Keys is what a file may say, and what an unknown key is measured
 // against.
-var Keys = []string{"author", "words", "public", "exclude", "lint"}
+var Keys = []string{"author", "words", "public", "exclude", "lint", "target"}
 
 // Rules is the lint names game knows.
 var Rules = []string{"width", "rows", "comments", "print", "exclaim", "shout", "words"}
@@ -119,6 +134,27 @@ func (c *Config) Parse(r interface{ Read([]byte) (int, error) }, path, home stri
 			c.Public = val
 		case "exclude":
 			c.Exclude = append(c.Exclude, val)
+		case "target":
+			name, rest, ok := strings.Cut(val, " ")
+			dir, cmd, ok2 := strings.Cut(strings.TrimSpace(rest), "::")
+			if !ok || !ok2 || strings.TrimSpace(cmd) == "" {
+				return fmt.Errorf("%s:%d: target wants \"target NAME DIR :: COMMAND ...\"", path, n)
+			}
+			dir = expand(strings.TrimSpace(dir), home)
+			step := strings.Fields(strings.TrimSpace(cmd))
+			for i := range step {
+				step[i] = expand(step[i], home)
+			}
+			found := false
+			for i := range c.Targets {
+				if c.Targets[i].Name == name {
+					c.Targets[i].Steps = append(c.Targets[i].Steps, step)
+					found = true
+				}
+			}
+			if !found {
+				c.Targets = append(c.Targets, Target{Name: name, Dir: dir, Steps: [][]string{step}})
+			}
 		case "lint":
 			f := strings.Fields(val)
 			known := false

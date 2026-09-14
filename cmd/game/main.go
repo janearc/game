@@ -7,6 +7,9 @@
 //	game check                    gofmt -l, go vet, go test, exit code kept
 //	game build                    every cmd/* into bin/, stamped with the
 //	                              commit and the time it was built
+//	game build NAME               a target the config describes: its steps
+//	                              in order, in its directory, under nice,
+//	                              the output kept in bin/NAME.log
 //	game clean [--cache]          go clean, and bin/ away; --cache also
 //	                              forgets go's build and test caches
 //	game lint [--look]            whatever lint the config describes,
@@ -29,6 +32,8 @@
 //	exclude spec-docs/                  left alone by the sweep; repeatable
 //	lint    width 80                    a lint rule; repeatable. a .game
 //	                                    that has any replaces the dotfile's
+//	target  NAME DIR :: COMMAND ...     a build beyond go's; one line per
+//	                                    step, in order
 package main
 
 import (
@@ -79,6 +84,10 @@ func main() {
 	case "check":
 		err = check(r)
 	case "build":
+		if len(os.Args) > 2 {
+			err = buildTarget(r, cfg, os.Args[2])
+			break
+		}
 		err = buildBinaries(r)
 	case "lint":
 		fs := flag.NewFlagSet("lint", flag.ExitOnError)
@@ -252,7 +261,7 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 // usage is the one line to type when the verb was wrong.
 func usage() {
-	fmt.Fprintln(os.Stderr, "game check | build | clean [--cache] | lint | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
+	fmt.Fprintln(os.Stderr, "game check | build [NAME] | clean [--cache] | lint | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
 }
 
 // age is which commit this binary is and how long ago it was built.
@@ -382,4 +391,61 @@ func described(cfg config.Config) (lint.Lint, error) {
 		}{r.Name, r.Args})
 	}
 	return lint.Describe(rules)
+}
+
+// buildTarget runs a described target's steps in order, in its
+// directory, under nice so prod and the person keep their share of the
+// machine, with everything it printed kept in bin/NAME.log and the last
+// lines shown. the first step that fails stops it, and says which.
+func buildTarget(r repo.Repo, cfg config.Config, name string) error {
+	var t *config.Target
+	for i := range cfg.Targets {
+		if cfg.Targets[i].Name == name {
+			t = &cfg.Targets[i]
+		}
+	}
+	if t == nil {
+		names := make([]string, 0, len(cfg.Targets))
+		for _, x := range cfg.Targets {
+			names = append(names, x.Name)
+		}
+		return fmt.Errorf("no target called %q; described: %s", name, strings.Join(names, ", "))
+	}
+	os.MkdirAll(filepath.Join(r.Dir, "bin"), 0o755)
+	logPath := filepath.Join(r.Dir, "bin", name+".log")
+	logf, err := os.Create(logPath)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	start := time.Now()
+	for i, step := range t.Steps {
+		fmt.Printf("build %s: step %d of %d: %s\n", name, i+1, len(t.Steps), strings.Join(step, " "))
+		fmt.Fprintf(logf, "== step %d: %s\n", i+1, strings.Join(step, " "))
+		cmd := exec.Command("nice", append([]string{"-n", "19"}, step...)...)
+		cmd.Dir = t.Dir
+		cmd.Stdout, cmd.Stderr = logf, logf
+		if err := cmd.Run(); err != nil {
+			tail(logPath, 12)
+			return fmt.Errorf("build %s: step %d failed after %s; the log is %s", name, i+1, time.Since(start).Round(time.Second), logPath)
+		}
+	}
+	tail(logPath, 4)
+	fmt.Printf("build %s: done in %s; the log is %s\n", name, time.Since(start).Round(time.Second), logPath)
+	return nil
+}
+
+// tail prints the last n lines of a file, for the moment after a build.
+func tail(path string, n int) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	for _, l := range lines {
+		fmt.Println("  " + l)
+	}
 }
