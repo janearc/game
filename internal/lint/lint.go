@@ -177,16 +177,25 @@ func goFile(path, rel string) ([]Finding, error) {
 	return out, nil
 }
 
+// Rows is the height a readme keeps to: one screen, the first page of
+// a manual, and no more.
+const Rows = 25
+
 // doc is the rules for one markdown file: no buzzwords, no exclamation
-// marks, since nothing is an emergency because nothing is an emergency.
+// marks, since nothing is an emergency because nothing is an emergency;
+// eighty columns; and a readme fits one screen.
 func doc(path, rel string) ([]Finding, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var out []Finding
+	lines := strings.Split(strings.TrimRight(string(src), "\n"), "\n")
+	if strings.EqualFold(filepath.Base(path), "README.md") && len(lines) > Rows {
+		out = append(out, Finding{rel, len(lines), "height", fmt.Sprintf("%d lines; a readme fits %d", len(lines), Rows), false})
+	}
 	code := false
-	for i, line := range strings.Split(string(src), "\n") {
+	for i, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
 			code = !code
 			continue
