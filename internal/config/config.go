@@ -34,12 +34,18 @@ type Config struct {
 //	target vt ~/src/ghostty :: ~/.local/zig/0.15.2/zig build -Demit-lib-vt
 //	target vt ~/src/ghostty :: cp zig-out/lib/libghostty-vt.a ../bin/
 //
-// game build NAME runs the steps in order, under nice so the rest of
-// the machine keeps its share, with the output kept in bin/NAME.log.
+// game build NAME runs the steps in order, each in its own directory,
+// under nice so the rest of the machine keeps its share, with the
+// output kept in bin/NAME.log.
 type Target struct {
 	Name  string
-	Dir   string
-	Steps [][]string
+	Steps []Step
+}
+
+// Step is one line of a target: where it runs, and what.
+type Step struct {
+	Dir  string
+	Args []string
 }
 
 // Rule is one line of lint: a name and its arguments. game knows a
@@ -148,12 +154,12 @@ func (c *Config) Parse(r interface{ Read([]byte) (int, error) }, path, home stri
 			found := false
 			for i := range c.Targets {
 				if c.Targets[i].Name == name {
-					c.Targets[i].Steps = append(c.Targets[i].Steps, step)
+					c.Targets[i].Steps = append(c.Targets[i].Steps, Step{Dir: dir, Args: step})
 					found = true
 				}
 			}
 			if !found {
-				c.Targets = append(c.Targets, Target{Name: name, Dir: dir, Steps: [][]string{step}})
+				c.Targets = append(c.Targets, Target{Name: name, Steps: []Step{{Dir: dir, Args: step}}})
 			}
 		case "lint":
 			f := strings.Fields(val)

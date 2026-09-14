@@ -85,12 +85,15 @@ func TestLoadOrder(t *testing.T) {
 // with the same name is the next step; a line without :: is refused.
 func TestTargets(t *testing.T) {
 	var c Config
-	src := "target ghostty ~/src/g :: ~/zig build -Doptimize=ReleaseFast\ntarget ghostty ~/src/g :: xcodebuild -scheme Ghostty\n"
+	src := "target ghostty . :: sh tools/toolchain\ntarget ghostty ~/src/g :: ~/zig build -Doptimize=ReleaseFast\n"
 	if err := c.Parse(strings.NewReader(src), "f", "/h", true); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Targets) != 1 || c.Targets[0].Dir != "/h/src/g" || len(c.Targets[0].Steps) != 2 || c.Targets[0].Steps[0][0] != "/h/zig" {
+	if len(c.Targets) != 1 || len(c.Targets[0].Steps) != 2 {
 		t.Fatalf("got %+v", c.Targets)
+	}
+	if a, b := c.Targets[0].Steps[0], c.Targets[0].Steps[1]; a.Dir != "." || b.Dir != "/h/src/g" || b.Args[0] != "/h/zig" {
+		t.Fatalf("each step keeps its own directory: %+v %+v", a, b)
 	}
 	var bad Config
 	if err := bad.Parse(strings.NewReader("target x ~/y zig build\n"), "f", "/h", true); err == nil {

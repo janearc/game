@@ -420,24 +420,22 @@ func buildTarget(r repo.Repo, cfg config.Config, name string) error {
 	defer logf.Close()
 	start := time.Now()
 	for i, step := range t.Steps {
-		fmt.Printf("build %s: step %d of %d: %s\n", name, i+1, len(t.Steps), strings.Join(step, " "))
-		fmt.Fprintf(logf, "== step %d: %s\n", i+1, strings.Join(step, " "))
+		fmt.Printf("build %s: step %d of %d: %s\n", name, i+1, len(t.Steps), strings.Join(step.Args, " "))
+		fmt.Fprintf(logf, "== step %d, in %s: %s\n", i+1, step.Dir, strings.Join(step.Args, " "))
+		dir := step.Dir
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(r.Dir, dir)
+		}
 		// a program named by a relative path is meant against the
-		// target's directory, not the shell's; nice would look from
+		// step's directory, not the shell's; nice would look from
 		// its own.
-		prog := step[0]
+		prog := step.Args[0]
 		if strings.Contains(prog, "/") && !filepath.IsAbs(prog) {
-			prog = filepath.Join(t.Dir, prog)
-			if !filepath.IsAbs(prog) {
-				prog = filepath.Join(r.Dir, prog)
-			}
+			prog = filepath.Join(dir, prog)
 		}
-		args := append([]string{"-n", "19", prog}, step[1:]...)
+		args := append([]string{"-n", "19", prog}, step.Args[1:]...)
 		cmd := exec.Command("nice", args...)
-		cmd.Dir = t.Dir
-		if !filepath.IsAbs(cmd.Dir) {
-			cmd.Dir = filepath.Join(r.Dir, cmd.Dir)
-		}
+		cmd.Dir = dir
 		cmd.Stdout, cmd.Stderr = logf, logf
 		if err := cmd.Run(); err != nil {
 			tail(logPath, 12)
