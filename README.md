@@ -1,7 +1,8 @@
 # game
 
-the verbs a project needs that go does not know are things. it runs in
-any shell and needs git and go and nothing else. make is the front
+the verbs a go project needs that go itself does not know are things.
+for go projects only, and small ones: it runs git and go and nothing
+else, and it is not a build tool for anything bigger. make is the front
 door: each target in a project's makefile is one line that calls a
 verb here.
 
