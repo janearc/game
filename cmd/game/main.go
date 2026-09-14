@@ -23,7 +23,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -34,6 +33,7 @@ import (
 	"time"
 
 	"github.com/janearc/game/internal/bounce"
+	"github.com/janearc/game/internal/config"
 	"github.com/janearc/game/internal/release"
 	"github.com/janearc/game/internal/repo"
 	"github.com/janearc/game/internal/sweep"
@@ -45,59 +45,6 @@ var (
 	built = ""
 )
 
-// config is the dotfile, with the defaults a repository gets without one.
-type config struct {
-	Author  string
-	Words   string
-	Public  string
-	Exclude []string
-}
-
-// load reads ~/.config/game/config and then .game in the repository,
-// the same keys, the repository's winning; a missing file is skipped.
-// the sweep's word list is only ever the dotfile's: a repository must
-// not be able to shorten the list of what it may not say.
-func load() config {
-	home := os.Getenv("HOME")
-	c := config{Words: filepath.Join(home, ".config/game/sweep.words"), Public: "../" + filepath.Base(cwd()) + "-root.git"}
-	c.read(filepath.Join(home, ".config/game/config"), true)
-	c.read(filepath.Join(cwd(), ".game"), false)
-	return c
-}
-
-// read folds one file into the config; words is honoured only for the
-// dotfile.
-func (c *config) read(path string, words bool) {
-	home := os.Getenv("HOME")
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, val, _ := strings.Cut(line, " ")
-		val = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(val), "="))
-		val = strings.Replace(val, "~", home, 1)
-		switch strings.ToLower(key) {
-		case "author":
-			c.Author = val
-		case "words":
-			if words {
-				c.Words = val
-			}
-		case "public":
-			c.Public = val
-		case "exclude":
-			c.Exclude = append(c.Exclude, val)
-		}
-	}
-}
-
 func cwd() string {
 	d, _ := os.Getwd()
 	return d
@@ -108,9 +55,12 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	cfg := load()
 	r := repo.Repo{Dir: cwd()}
-	var err error
+	cfg, err := config.Load(os.Getenv("HOME"), r.Dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "game:", err)
+		os.Exit(2)
+	}
 	switch os.Args[1] {
 	case "version", "--age":
 		fmt.Println(age())
