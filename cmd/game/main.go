@@ -16,6 +16,7 @@
 //	                              for prose; wide code and shouting are
 //	                              counted, and listed with --look
 //	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
+//	                              lint must pass first
 //	game bounce [RANGE]           what is staged, or a commit or range
 //	game sweep [REV]              the tree at a revision, default HEAD
 //	game version                  which commit this binary is, and its age
@@ -25,9 +26,9 @@
 // over both; the word list is the dotfile's alone:
 //
 //	author  Jane                        the name the bounce refuses
-//	words   ~/.config/game/sweep.words  words the sweep refuses, one per line
-//	public  ../daffy-root.git           the public root, relative to the repo
-//	exclude spec-docs/                  a prefix the sweep leaves alone; repeatable
+//	words   ~/.config/game/sweep.words  the sweep's word list
+//	public  ../daffy-root.git           the public root, from the repo
+//	exclude spec-docs/                  left alone by the sweep; repeatable
 package main
 
 import (
@@ -126,6 +127,15 @@ func main() {
 		ex := append(append([]string(nil), cfg.Exclude...), exclude...)
 		msg, e := message(r, *msgFile, *public)
 		if e != nil {
+			err = e
+			break
+		}
+		// lint clean before anything leaves: a release is the one
+		// moment the house rules are not a suggestion.
+		if found, e := lint.Run(r.Dir); e != nil || lint.Failed(found) {
+			if e == nil {
+				e = fmt.Errorf("refused: lint has things to fix; run game lint")
+			}
 			err = e
 			break
 		}
