@@ -7,16 +7,14 @@ else, and it is not a build tool for anything bigger. no makefile:
 
     game check        gofmt, vet and the tests, exit code kept
     game build        every cmd/* into bin/, stamped with commit and time
+    game clean        go clean, and bin/ away; --cache for a cold run
     game release      the published history is one commit per release,
-                      each the whole tree and none of the road to it:
-                      built from the branch you are on, proven to have
-                      its tree, swept, pushed to the public root
-    game bounce       a repository written in the first person: a staged
-                      change that adds the author in the third person is
-                      refused until she signs it off
-    game sweep        what must not be published: attribution trailers,
-                      session urls, uuids, paths on one machine, email
-                      addresses, and a word list kept outside the tree
+                      the whole tree and none of the road: proven by
+                      hash, swept, pushed to the public root
+    game bounce       first person only: a change that adds the author
+                      in the third person waits for her sign-off
+    game sweep        what must not be published: trailers, session
+                      urls, uuids, machine paths, addresses, a word list
     game version      which commit this binary is, and how old
 
 settings live in `~/.config/game/config` and in `.game` in the

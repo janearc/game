@@ -7,6 +7,8 @@
 //	game check                    gofmt -l, go vet, go test, exit code kept
 //	game build                    every cmd/* into bin/, stamped with the
 //	                              commit and the time it was built
+//	game clean [--cache]          go clean, and bin/ away; --cache also
+//	                              forgets go's build and test caches
 //	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
 //	game bounce [RANGE]           what is staged, or a commit or range
 //	game sweep [REV]              the tree at a revision, default HEAD
@@ -68,6 +70,11 @@ func main() {
 		err = check(r)
 	case "build":
 		err = buildBinaries(r)
+	case "clean":
+		fs := flag.NewFlagSet("clean", flag.ExitOnError)
+		cache := fs.Bool("cache", false, "also forget go's build and test caches, for a cold run")
+		fs.Parse(os.Args[2:])
+		err = clean(r, *cache)
 	case "release":
 		fs := flag.NewFlagSet("release", flag.ExitOnError)
 		public := fs.String("public", cfg.Public, "the public root, a path or url")
@@ -178,7 +185,7 @@ func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "game check | build | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
+	fmt.Fprintln(os.Stderr, "game check | build | clean [--cache] | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
 }
 
 func age() string {
@@ -274,4 +281,22 @@ func run(dir, name string, args ...string) (string, error) {
 		return out.String(), fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
 	return out.String(), nil
+}
+
+// clean is go clean, which knows what go build left behind, plus bin/,
+// which go does not know about because it is ours.
+func clean(r repo.Repo, cache bool) error {
+	if _, err := run(r.Dir, "go", "clean", "./..."); err != nil {
+		return err
+	}
+	if cache {
+		if _, err := run(r.Dir, "go", "clean", "-cache", "-testcache"); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(r.Dir, "bin")); err != nil {
+		return err
+	}
+	fmt.Println("clean: bin/ away" + map[bool]string{true: ", caches forgotten", false: ""}[cache])
+	return nil
 }
