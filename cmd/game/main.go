@@ -9,11 +9,12 @@
 //	                              commit and the time it was built
 //	game clean [--cache]          go clean, and bin/ away; --cache also
 //	                              forgets go's build and test caches
-//	game lint                     the house rules a machine can check:
+//	game lint [--look]            the house rules a machine can check:
 //	                              functions commented, no bare print
 //	                              outside main, no buzzwords, no
-//	                              exclamation marks in docs; shouting
-//	                              in comments is reported, not failed
+//	                              exclamation marks in docs, 80 columns
+//	                              for prose; wide code and shouting are
+//	                              counted, and listed with --look
 //	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
 //	game bounce [RANGE]           what is staged, or a commit or range
 //	game sweep [REV]              the tree at a revision, default HEAD
@@ -79,17 +80,32 @@ func main() {
 	case "build":
 		err = buildBinaries(r)
 	case "lint":
-		fs, e := lint.Run(r.Dir)
+		fs := flag.NewFlagSet("lint", flag.ExitOnError)
+		look := fs.Bool("look", false, "list the things to look at, not only count them")
+		fs.Parse(os.Args[2:])
+		found, e := lint.Run(r.Dir)
 		if e != nil {
 			err = e
 			break
 		}
-		for _, f := range fs {
+		fix, looks := 0, map[string]int{}
+		for _, f := range found {
+			if f.Look {
+				looks[f.Rule]++
+				if *look {
+					fmt.Println(f)
+				}
+				continue
+			}
+			fix++
 			fmt.Println(f)
 		}
-		if lint.Failed(fs) {
-			err = fmt.Errorf("lint: %d to fix", len(fs))
-		} else if len(fs) == 0 {
+		for rule, n := range looks {
+			fmt.Printf("look: %d %s (--look lists them)\n", n, rule)
+		}
+		if fix > 0 {
+			err = fmt.Errorf("lint: %d to fix", fix)
+		} else if len(looks) == 0 {
 			fmt.Println("lint: clean")
 		}
 		if _, e := exec.LookPath("staticcheck"); e != nil {

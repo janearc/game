@@ -1,10 +1,12 @@
 // Package lint is the house rules that a machine can check: every
 // function commented on the line above it; no bare print outside
 // package main, since a daemon logs and a library returns; no
-// buzzwords; no exclamation marks in docs; and shouty capitals in
-// comments, which are reported to be looked at rather than failed,
-// because MUST and JSON are allowed to shout. go vet and gofmt are
-// check's; staticcheck runs here if it is on the path.
+// buzzwords; no exclamation marks in docs; eighty columns for prose,
+// which is docs and comments, with wider code reported to look at,
+// since a struct tag or a long string can be the good reason; and
+// shouty capitals in comments, reported rather than failed, because
+// MUST and JSON are allowed to shout. go vet and gofmt are check's;
+// staticcheck runs here if it is on the path.
 package lint
 
 import (
@@ -158,6 +160,10 @@ func goFile(path, rel string) ([]Finding, error) {
 		if m := buzzwords.FindString(line); m != "" {
 			out = append(out, Finding{rel, i + 1, "buzzword", m, false})
 		}
+		if w := width(line); w > Columns {
+			look := !strings.HasPrefix(strings.TrimSpace(line), "//")
+			out = append(out, Finding{rel, i + 1, "width", fmt.Sprintf("%d columns", w), look})
+		}
 	}
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
@@ -194,6 +200,27 @@ func doc(path, rel string) ([]Finding, error) {
 		if strings.Contains(line, "!") && !strings.Contains(line, "![") && !strings.Contains(line, "!=") {
 			out = append(out, Finding{rel, i + 1, "exclamation", strings.TrimSpace(line), false})
 		}
+		if w := width(line); w > Columns && !strings.HasPrefix(line, "|") && !strings.Contains(line, "](") {
+			out = append(out, Finding{rel, i + 1, "width", fmt.Sprintf("%d columns", w), false})
+		}
 	}
 	return out, nil
+}
+
+// Columns is the width prose keeps to: what a reader's screen shows,
+// and what jane reads at. tables and lines with a link are let be in
+// docs, since neither wraps.
+const Columns = 80
+
+// width is a line's width in columns, tabs counted as go prints them.
+func width(line string) int {
+	n := 0
+	for _, r := range line {
+		if r == '\t' {
+			n += 8 - n%8
+		} else {
+			n++
+		}
+	}
+	return n
 }
