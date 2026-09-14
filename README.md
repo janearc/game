@@ -2,8 +2,8 @@
 
 the verbs a go project needs that go itself does not know are things.
 for go projects only, and small ones: it runs git and go and nothing
-else, and it is not a build tool for anything bigger. there is no
-makefile; `go build ./cmd/game` once, and game does the rest.
+else, and it is not a build tool for anything bigger. no makefile:
+`sh bootstrap.sh install` once, and game builds game from then on.
 
     game check        gofmt, vet and the tests, exit code kept
     game build        every cmd/* into bin/, stamped with commit and time
