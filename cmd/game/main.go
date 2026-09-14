@@ -1,8 +1,12 @@
-// game: the verbs a project needs that go does not know are things.
-// release, bounce, sweep, version. it runs in any shell; the window it
-// will one day draw in is another program's business. make is the front
-// door; each target is one line that calls a verb here.
+// game: the verbs a go project needs that go itself does not know are
+// things. check, build, release, bounce, sweep, version. it runs in any
+// shell and needs git and go and nothing else; there is no makefile
+// because there is nothing left for one to say. the window it will one
+// day draw in is another program's business.
 //
+//	game check                    gofmt -l, go vet, go test, exit code kept
+//	game build                    every cmd/* into bin/, stamped with the
+//	                              commit and the time it was built
 //	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
 //	game bounce [RANGE]           what is staged, or a commit or range
 //	game sweep [REV]              the tree at a revision, default HEAD
@@ -20,9 +24,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -108,6 +114,10 @@ func main() {
 	switch os.Args[1] {
 	case "version", "--age":
 		fmt.Println(age())
+	case "check":
+		err = check(r)
+	case "build":
+		err = buildBinaries(r)
 	case "release":
 		fs := flag.NewFlagSet("release", flag.ExitOnError)
 		public := fs.String("public", cfg.Public, "the public root, a path or url")
@@ -218,7 +228,7 @@ func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "game release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
+	fmt.Fprintln(os.Stderr, "game check | build | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
 }
 
 func age() string {
@@ -250,4 +260,68 @@ func project(r repo.Repo, public string) string {
 		}
 	}
 	return filepath.Base(r.Dir)
+}
+
+// check is the gate: gofmt has nothing to say, vet passes, the tests
+// pass, and the exit code is the tests', never a pipe's.
+func check(r repo.Repo) error {
+	out, err := run(r.Dir, "gofmt", "-l", ".")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(out) != "" {
+		return fmt.Errorf("gofmt would change: %s", strings.ReplaceAll(strings.TrimSpace(out), "\n", " "))
+	}
+	if _, err := run(r.Dir, "go", "vet", "./..."); err != nil {
+		return err
+	}
+	out, err = run(r.Dir, "go", "test", "./...")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line != "" && !strings.Contains(line, "no test files") {
+			fmt.Println(line)
+		}
+	}
+	return err
+}
+
+// buildBinaries builds every cmd/* into bin/, stamped so version can say
+// which commit and how old.
+func buildBinaries(r repo.Repo) error {
+	entries, err := os.ReadDir(filepath.Join(r.Dir, "cmd"))
+	if err != nil {
+		return fmt.Errorf("no cmd/ directory to build")
+	}
+	commit, _ := r.Git("rev-parse", "--short", "HEAD")
+	if clean, _ := r.Clean(); !clean {
+		commit += "-dirty"
+	}
+	stamp := fmt.Sprintf("-X main.build=%s -X main.built=%s", commit, time.Now().UTC().Format(time.RFC3339))
+	os.MkdirAll(filepath.Join(r.Dir, "bin"), 0o755)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := run(r.Dir, "go", "build", "-ldflags", stamp, "-o", filepath.Join("bin", e.Name()), "./cmd/"+e.Name()); err != nil {
+			return err
+		}
+		fmt.Printf("build: bin/%s %s\n", e.Name(), commit)
+	}
+	return nil
+}
+
+// run is one command in a directory, output and go's own words on error.
+func run(dir, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	if err != nil {
+		msg := strings.TrimSpace(errb.String())
+		if msg == "" {
+			msg = strings.TrimSpace(out.String())
+		}
+		return out.String(), fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
+	}
+	return out.String(), nil
 }
