@@ -8,8 +8,9 @@
 //	game sweep [REV]              the tree at a revision, default HEAD
 //	game version                  which commit this binary is, and its age
 //
-// settings come from ~/.config/game/config, one per line, and a flag
-// wins over the file:
+// settings come from ~/.config/game/config and then .game in the
+// repository, one per line, the repository's winning and a flag winning
+// over both; the word list is the dotfile's alone:
 //
 //	author  Jane                        the name the bounce refuses
 //	words   ~/.config/game/sweep.words  words the sweep refuses, one per line
@@ -46,13 +47,25 @@ type config struct {
 	Exclude []string
 }
 
-// load reads ~/.config/game/config; a missing file is the defaults.
+// load reads ~/.config/game/config and then .game in the repository,
+// the same keys, the repository's winning; a missing file is skipped.
+// the sweep's word list is only ever the dotfile's: a repository must
+// not be able to shorten the list of what it may not say.
 func load() config {
 	home := os.Getenv("HOME")
 	c := config{Words: filepath.Join(home, ".config/game/sweep.words"), Public: "../" + filepath.Base(cwd()) + "-root.git"}
-	f, err := os.Open(filepath.Join(home, ".config/game/config"))
+	c.read(filepath.Join(home, ".config/game/config"), true)
+	c.read(filepath.Join(cwd(), ".game"), false)
+	return c
+}
+
+// read folds one file into the config; words is honoured only for the
+// dotfile.
+func (c *config) read(path string, words bool) {
+	home := os.Getenv("HOME")
+	f, err := os.Open(path)
 	if err != nil {
-		return c
+		return
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -68,14 +81,15 @@ func load() config {
 		case "author":
 			c.Author = val
 		case "words":
-			c.Words = val
+			if words {
+				c.Words = val
+			}
 		case "public":
 			c.Public = val
 		case "exclude":
 			c.Exclude = append(c.Exclude, val)
 		}
 	}
-	return c
 }
 
 func cwd() string {

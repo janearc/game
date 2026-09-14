@@ -18,8 +18,9 @@ verb here.
                       addresses, and a word list kept outside the tree
     game version      which commit this binary is, and how old
 
-settings live in `~/.config/game/config`, one per line: `author`,
-`words`, `public`, `exclude`. the window a build will one day draw in
+settings live in `~/.config/game/config` and in `.game` in the
+repository, one per line: `author`, `words`, `public`, `exclude`; the
+repository's win, except the word list, which is the dotfile's alone. the window a build will one day draw in
 is another program's job; this is the part that runs anywhere.
 
 we chose stupid, so you can be pretty. build forward.
