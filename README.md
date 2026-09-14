@@ -1,0 +1,24 @@
+# game
+
+the verbs a project needs that go does not know are things. it runs in
+any shell and needs git and go and nothing else. make is the front
+door: each target in a project's makefile is one line that calls a
+verb here.
+
+    game release      the published history is one commit per release,
+                      each the whole tree and none of the road to it:
+                      built from the branch you are on, proven to have
+                      its tree, swept, pushed to the public root
+    game bounce       a repository written in the first person: a staged
+                      change that adds the author in the third person is
+                      refused until she signs it off
+    game sweep        what must not be published: attribution trailers,
+                      session urls, uuids, paths on one machine, email
+                      addresses, and a word list kept outside the tree
+    game version      which commit this binary is, and how old
+
+settings live in `~/.config/game/config`, one per line: `author`,
+`words`, `public`, `exclude`. the window a build will one day draw in
+is another program's job; this is the part that runs anywhere.
+
+we chose stupid, so you can be pretty. build forward.
