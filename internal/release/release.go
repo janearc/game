@@ -109,9 +109,10 @@ func Run(r repo.Repo, o Options) (Result, error) {
 			return res, err
 		}
 		if t, _ := r.Tree(current); t == tree {
+			// already out there; a tag asked for now names it.
 			res.Skipped = true
 			res.Commit = current
-			return res, nil
+			return res, tag(r, o, current)
 		}
 		args = append(args, "-p", current)
 	}
@@ -146,15 +147,20 @@ func Run(r repo.Repo, o Options) (Result, error) {
 	if _, err := r.Git("update-ref", Mark(o.Public), "HEAD"); err != nil {
 		return res, err
 	}
-	if o.Tag != "" {
-		if _, err := r.GitIn(o.Message+"\n", "tag", "-a", o.Tag, commit, "-F", "-"); err != nil {
-			return res, err
-		}
-		if _, err := r.Git("push", o.Public, "refs/tags/"+o.Tag); err != nil {
-			return res, err
-		}
+	return res, tag(r, o, commit)
+}
+
+// tag puts the asked-for tag on a public commit and pushes it, or does
+// nothing when none was asked for.
+func tag(r repo.Repo, o Options, commit string) error {
+	if o.Tag == "" {
+		return nil
 	}
-	return res, nil
+	if _, err := r.GitIn(o.Message+"\n", "tag", "-a", o.Tag, commit, "-F", "-"); err != nil {
+		return err
+	}
+	_, err := r.Git("push", o.Public, "refs/tags/"+o.Tag)
+	return err
 }
 
 // Describe is hits as one line a person can act on.

@@ -153,6 +153,24 @@ func TestNotesMarkAndTag(t *testing.T) {
 	}
 }
 
+// a release already out there, untagged, gets its tag when asked: the
+// second run skips the commit and still names the first one.
+func TestTagOnUnchangedTree(t *testing.T) {
+	r, pub := fixture(t)
+	first, err := Run(r, Options{Public: pub, Message: "first"})
+	if err != nil || first.Skipped {
+		t.Fatalf("first release: %+v %v", first, err)
+	}
+	again, err := Run(r, Options{Public: pub, Message: "named", Tag: "v0.2.0"})
+	if err != nil || !again.Skipped || again.Commit != first.Commit {
+		t.Fatalf("second run should skip and point at the first: %+v %v", again, err)
+	}
+	tags, _ := r.Git("ls-remote", "--tags", pub)
+	if !strings.Contains(tags, first.Commit) || !strings.Contains(tags, "v0.2.0") {
+		t.Errorf("the tag did not land on the released commit: %q", tags)
+	}
+}
+
 // a repository that kept the first releases' single mark releases
 // cleanly: the old ref is retired and the per-root mark takes its place.
 func TestOldMarkRetired(t *testing.T) {

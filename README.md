@@ -8,8 +8,8 @@ makefile: `sh bootstrap.sh install` once, then game builds game.
     game build     every cmd/* into bin/, stamped; `build NAME` runs a
                    described target's steps in order, under nice
     game clean     go clean, and bin/ away; --cache for a cold run
-    game lint      the house rules: comments, no bare print outside
-                   main, no buzzwords or exclamation marks, 80 columns
+    game lint      whatever lint your config describes, counted and
+                   listed; example/config describes ours
     game release   one public commit per release, the whole tree and
                    none of the road: proven, swept, lint clean; --tag
     game run       a described run, in your terminal, tmux dropped
