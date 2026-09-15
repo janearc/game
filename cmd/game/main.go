@@ -184,7 +184,7 @@ func main() {
 			err = e
 			break
 		}
-		res, e := release.Run(r, release.Options{Public: *public, Message: msg, Words: words, Exclude: ex, Tag: *tag})
+		res, e := release.Run(r, release.Options{Public: *public, Message: msg, Words: words, Exclude: ex, Tag: *tag, Author: cfg.Author})
 		switch {
 		case e != nil:
 			err = e
@@ -232,7 +232,7 @@ func main() {
 		if err != nil {
 			break
 		}
-		th, e := sweep.Tree(r, rev, sweep.Words(cfg.Words), cfg.Exclude...)
+		th, e := sweep.Tree(r, rev, sweep.Words(cfg.Words), cfg.Author, cfg.Exclude...)
 		if e != nil {
 			err = e
 			break

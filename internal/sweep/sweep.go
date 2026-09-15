@@ -61,8 +61,14 @@ func History(r repo.Repo, rev string) ([]Hit, error) {
 }
 
 // Tree sweeps every tracked file at a revision, except those under the
-// excluded prefixes, for the fixed patterns and the words.
-func Tree(r repo.Repo, rev string, words []string, exclude ...string) ([]Hit, error) {
+// excluded prefixes, for the fixed patterns and the words. The author's
+// name is a word like the others when given: a repository in the first
+// person does not name its author in the third, in a change or in the
+// tree that changes made.
+func Tree(r repo.Repo, rev string, words []string, author string, exclude ...string) ([]Hit, error) {
+	if author != "" {
+		words = append(append([]string(nil), words...), author)
+	}
 	files, err := r.Files(rev, exclude...)
 	if err != nil {
 		return nil, err

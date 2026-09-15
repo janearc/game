@@ -22,6 +22,7 @@ type Options struct {
 	Words   []string // the sweep's word list
 	Exclude []string // path prefixes the sweep leaves alone, kept verbatim
 	Tag     string   // a tag to put on the public root at the release, or none
+	Author  string   // the author's name, refused in the released tree
 }
 
 // Mark is the private commit the last release to a public root was cut
@@ -129,7 +130,7 @@ func Run(r repo.Repo, o Options) (Result, error) {
 	if err != nil {
 		return res, err
 	}
-	th, err := sweep.Tree(r, commit, o.Words, o.Exclude...)
+	th, err := sweep.Tree(r, commit, o.Words, o.Author, o.Exclude...)
 	if err != nil {
 		return res, err
 	}

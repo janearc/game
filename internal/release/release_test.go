@@ -170,3 +170,22 @@ func TestOldMarkRetired(t *testing.T) {
 		t.Error("the old mark is still there")
 	}
 }
+
+// the author's name in the tree refuses a release, the way the bounce
+// refuses it in a change; the handle in a module path is not the name.
+func TestAuthorInTheTree(t *testing.T) {
+	r, pub := fixture(t)
+	os.WriteFile(filepath.Join(r.Dir, "notes.md"), []byte("Ada asked for this.\nmodule github.com/adalovelace/x\n"), 0o644)
+	r.Git("add", "notes.md")
+	r.GitIn("", "commit", "-q", "-m", "notes")
+	res, err := Run(r, Options{Public: pub, Message: "m", Author: "Ada"})
+	if err == nil || len(res.Hits) == 0 {
+		t.Fatalf("the author's name in the tree released: %+v %v", res, err)
+	}
+	os.WriteFile(filepath.Join(r.Dir, "notes.md"), []byte("the operation as asked for.\nmodule github.com/adalovelace/x\n"), 0o644)
+	r.Git("add", "notes.md")
+	r.GitIn("", "commit", "-q", "-m", "first person")
+	if _, err := Run(r, Options{Public: pub, Message: "m", Author: "Ada"}); err != nil {
+		t.Fatalf("the handle was taken for the name: %v", err)
+	}
+}
