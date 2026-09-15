@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/janearc/game/internal/bounce"
 	"github.com/janearc/game/internal/repo"
 	"github.com/janearc/game/internal/sweep"
 )
@@ -19,6 +20,40 @@ type Options struct {
 	Message string   // the commit message, sign-off line included
 	Words   []string // the sweep's word list
 	Exclude []string // path prefixes the sweep leaves alone, kept verbatim
+	Tag     string   // a tag to put on the public root at the release, or none
+}
+
+// Mark is the private commit the last release was cut from, kept as a
+// ref in the private repository so "since the last release" has a
+// meaning. It never appears in a public message.
+const Mark = "refs/game/released"
+
+// Notes are the private commit subjects since the mark, for a release
+// message; each is swept and bounced before it may leave, since a
+// subject can name a person as easily as a file can. No mark, no notes.
+func Notes(r repo.Repo, words []string, author string) ([]string, []sweep.Hit, error) {
+	since, err := r.Git("rev-parse", "--verify", "-q", Mark)
+	if err != nil || since == "" {
+		return nil, nil, nil
+	}
+	out, err := r.Git("log", "--format=%s", since+"..HEAD")
+	if err != nil {
+		return nil, nil, err
+	}
+	var notes []string
+	var hits []sweep.Hit
+	for _, subject := range strings.Split(out, "\n") {
+		subject = strings.TrimSpace(subject)
+		if subject == "" {
+			continue
+		}
+		hits = append(hits, sweep.Text("a commit subject", subject, words)...)
+		if author != "" && len(bounce.Check("+"+subject, author)) > 0 {
+			hits = append(hits, sweep.Hit{Kind: "the author in the third person", File: "a commit subject"})
+		}
+		notes = append(notes, subject)
+	}
+	return notes, hits, nil
 }
 
 // Result says what happened.
@@ -87,6 +122,18 @@ func Run(r repo.Repo, o Options) (Result, error) {
 	}
 	if _, err := r.Git("push", o.Public, commit+":refs/heads/main"); err != nil {
 		return res, err
+	}
+	// the mark moves only once the release has landed.
+	if _, err := r.Git("update-ref", Mark, "HEAD"); err != nil {
+		return res, err
+	}
+	if o.Tag != "" {
+		if _, err := r.GitIn(o.Message+"\n", "tag", "-a", o.Tag, commit, "-F", "-"); err != nil {
+			return res, err
+		}
+		if _, err := r.Git("push", o.Public, "refs/tags/"+o.Tag); err != nil {
+			return res, err
+		}
 	}
 	return res, nil
 }

@@ -119,3 +119,33 @@ func TestReleaseRefuses(t *testing.T) {
 		t.Error("the release did not land")
 	}
 }
+
+// after a release the mark is set, so the next release's notes are the
+// subjects since; a subject that names the author refuses the notes;
+// a tag lands on the public root at the release.
+func TestNotesMarkAndTag(t *testing.T) {
+	r, pub := fixture(t)
+	if notes, _, _ := Notes(r, nil, "Ada"); len(notes) != 0 {
+		t.Fatalf("notes before any release: %v", notes)
+	}
+	if _, err := Run(r, Options{Public: pub, Message: "first", Tag: "v0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if tags, _ := r.Git("ls-remote", "--tags", pub); !strings.Contains(tags, "v0.0.1") {
+		t.Errorf("the tag did not land: %q", tags)
+	}
+	os.WriteFile(filepath.Join(r.Dir, "c.txt"), []byte("more\n"), 0o644)
+	r.Git("add", "c.txt")
+	r.GitIn("", "commit", "-q", "-m", "the corner follows the phone")
+	notes, hits, err := Notes(r, nil, "Ada")
+	if err != nil || len(notes) != 1 || notes[0] != "the corner follows the phone" || len(hits) != 0 {
+		t.Fatalf("notes: %v %v %v", notes, hits, err)
+	}
+	os.WriteFile(filepath.Join(r.Dir, "d.txt"), []byte("x\n"), 0o644)
+	r.Git("add", "d.txt")
+	r.GitIn("", "commit", "-q", "-m", "Ada wanted this one")
+	_, hits, _ = Notes(r, nil, "Ada")
+	if len(hits) == 0 {
+		t.Error("a subject naming the author was not bounced")
+	}
+}

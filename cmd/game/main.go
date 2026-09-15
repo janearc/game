@@ -16,8 +16,14 @@
 //	                              with `lint` lines; nothing described
 //	                              is no lint. wide code and shouting are
 //	                              counted, and listed with --look
-//	game release [--public PATH] [--message FILE] [--exclude PREFIX]...
-//	                              lint must pass first
+//	game release [--public PATH] [--message FILE] [--tag NAME]
+//	             [--exclude PREFIX]...
+//	                              lint must pass first; the notes are the
+//	                              commit subjects since the last release
+//	game run NAME                 a run the config describes, in the
+//	                              foreground, in your terminal, not nice'd;
+//	                              tmux's variables are dropped, since a
+//	                              window is not inside your tmux
 //	game bounce [RANGE]           what is staged, or a commit or range
 //	game sweep [REV]              the tree at a revision, default HEAD
 //	game version                  which commit this binary is, and its age
@@ -34,6 +40,7 @@
 //	                                    that has any replaces the dotfile's
 //	target  NAME DIR :: COMMAND ...     a build beyond go's; one line per
 //	                                    step, in order
+//	run     NAME DIR :: COMMAND ...     a thing to run, the same way
 package main
 
 import (
@@ -89,6 +96,12 @@ func main() {
 			break
 		}
 		err = buildBinaries(r)
+	case "run":
+		if len(os.Args) < 3 {
+			usage()
+			os.Exit(2)
+		}
+		err = runNamed(r, cfg, os.Args[2])
 	case "lint":
 		fs := flag.NewFlagSet("lint", flag.ExitOnError)
 		look := fs.Bool("look", false, "list the things to look at, not only count them")
@@ -138,12 +151,23 @@ func main() {
 	case "release":
 		fs := flag.NewFlagSet("release", flag.ExitOnError)
 		public := fs.String("public", cfg.Public, "the public root, a path or url")
-		msgFile := fs.String("message", "", "a file holding the release commit message; default is a dated line and the sign-off from the last commit")
+		msgFile := fs.String("message", "", "a file holding the release commit message; default is a dated line, the notes since the last release, and the sign-off from the last commit")
+		tag := fs.String("tag", "", "a tag to put on the public root at this release, e.g. v0.1.0")
 		var exclude multi
 		fs.Var(&exclude, "exclude", "a path prefix the sweep leaves alone; repeatable")
 		fs.Parse(os.Args[2:])
 		ex := append(append([]string(nil), cfg.Exclude...), exclude...)
-		msg, e := message(r, *msgFile, *public)
+		words := sweep.Words(cfg.Words)
+		notes, hits, e := release.Notes(r, words, cfg.Author)
+		if e != nil {
+			err = e
+			break
+		}
+		if len(hits) > 0 {
+			err = fmt.Errorf("refused: the notes since the last release carry %s", release.Describe(hits))
+			break
+		}
+		msg, e := message(r, *msgFile, *public, notes)
 		if e != nil {
 			err = e
 			break
@@ -160,14 +184,18 @@ func main() {
 			err = e
 			break
 		}
-		res, e := release.Run(r, release.Options{Public: *public, Message: msg, Words: sweep.Words(cfg.Words), Exclude: ex})
+		res, e := release.Run(r, release.Options{Public: *public, Message: msg, Words: words, Exclude: ex, Tag: *tag})
 		switch {
 		case e != nil:
 			err = e
 		case res.Skipped:
 			fmt.Printf("release: nothing to release; the public main already has this tree\n")
 		default:
-			fmt.Printf("release: %s pushed as main to %s; tree %s\n", res.Commit[:7], *public, res.Tree)
+			fmt.Printf("release: %s pushed as main to %s; tree %s", res.Commit[:7], *public, res.Tree)
+			if *tag != "" {
+				fmt.Printf("; tagged %s", *tag)
+			}
+			fmt.Println()
 		}
 	case "bounce":
 		if cfg.Author == "" {
@@ -232,7 +260,7 @@ func main() {
 // dated line, the project's name, and whatever sign-off line the last
 // commit on the branch ends with, so the release is signed the way the
 // work was.
-func message(r repo.Repo, file, public string) (string, error) {
+func message(r repo.Repo, file, public string, notes []string) (string, error) {
 	if file != "" {
 		b, err := os.ReadFile(file)
 		if err != nil {
@@ -247,7 +275,11 @@ func message(r repo.Repo, file, public string) (string, error) {
 	if len(lines) > 0 && !strings.Contains(lines[len(lines)-1], " ") {
 		sign = "\n\n" + lines[len(lines)-1]
 	}
-	return fmt.Sprintf("%s, as it stands on %s\n\ncut from a private branch whose tree this is exactly, proven by hash.\nwhat the private history holds is the road here.%s", name, time.Now().Format("2006-01-02"), sign), nil
+	body := "cut from a private branch whose tree this is exactly, proven by hash.\nwhat the private history holds is the road here."
+	if len(notes) > 0 {
+		body += "\n\nsince the last release:\n- " + strings.Join(notes, "\n- ")
+	}
+	return fmt.Sprintf("%s, as it stands on %s\n\n%s%s", name, time.Now().Format("2006-01-02"), body, sign), nil
 }
 
 // multi is a repeatable flag.
@@ -261,7 +293,7 @@ func (m *multi) Set(s string) error { *m = append(*m, s); return nil }
 
 // usage is the one line to type when the verb was wrong.
 func usage() {
-	fmt.Fprintln(os.Stderr, "game check | build [NAME] | clean [--cache] | lint | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
+	fmt.Fprintln(os.Stderr, "game check | build [NAME] | run NAME | clean [--cache] | lint | release [--public PATH] [--message FILE] [--exclude PREFIX]... | bounce [RANGE] | sweep [REV] | version")
 }
 
 // age is which commit this binary is and how long ago it was built.
@@ -460,4 +492,49 @@ func tail(path string, n int) {
 	for _, l := range lines {
 		fmt.Println("  " + l)
 	}
+}
+
+// runNamed runs a described run's steps in the foreground: your
+// terminal is its terminal, nothing is nice'd or logged, and tmux's
+// variables are dropped from the environment, because a window opened
+// from inside tmux is not inside it and a program that checks would be
+// misled.
+func runNamed(r repo.Repo, cfg config.Config, name string) error {
+	var t *config.Target
+	for i := range cfg.Runs {
+		if cfg.Runs[i].Name == name {
+			t = &cfg.Runs[i]
+		}
+	}
+	if t == nil {
+		names := make([]string, 0, len(cfg.Runs))
+		for _, x := range cfg.Runs {
+			names = append(names, x.Name)
+		}
+		return fmt.Errorf("no run called %q; described: %s", name, strings.Join(names, ", "))
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	for _, step := range t.Steps {
+		dir := step.Dir
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(r.Dir, dir)
+		}
+		prog := step.Args[0]
+		if strings.Contains(prog, "/") && !filepath.IsAbs(prog) {
+			prog = filepath.Join(dir, prog)
+		}
+		cmd := exec.Command(prog, step.Args[1:]...)
+		cmd.Dir, cmd.Env = dir, env
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("run %s: %s: %w", name, strings.Join(step.Args, " "), err)
+		}
+	}
+	return nil
 }

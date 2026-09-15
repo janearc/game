@@ -105,3 +105,23 @@ func utf8ish(s string) bool {
 	}
 	return !strings.ContainsRune(head, 0)
 }
+
+// Text sweeps one piece of prose, a commit subject say, for the fixed
+// patterns and the words; the file named in a hit is the label given.
+func Text(label, text string, words []string) []Hit {
+	var hits []Hit
+	for _, p := range []struct {
+		kind string
+		re   *regexp.Regexp
+	}{{"attribution trailers", trailers}, {"session urls", urls}, {"uuids", uuids}, {"machine paths", paths}, {"email addresses", emails}} {
+		if p.re.MatchString(text) {
+			hits = append(hits, Hit{p.kind, label})
+		}
+	}
+	for _, w := range words {
+		if regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(w) + `\b`).MatchString(text) {
+			hits = append(hits, Hit{"listed word " + w, label})
+		}
+	}
+	return hits
+}

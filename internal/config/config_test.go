@@ -99,4 +99,8 @@ func TestTargets(t *testing.T) {
 	if err := bad.Parse(strings.NewReader("target x ~/y zig build\n"), "f", "/h", true); err == nil {
 		t.Error("a target without :: parsed")
 	}
+	var run Config
+	if err := run.Parse(strings.NewReader("run ghostty . :: open -na build/app/T.app --args -e bin/daffy\n"), "f", "/h", true); err != nil || len(run.Runs) != 1 || run.Runs[0].Name != "ghostty" {
+		t.Fatalf("run: %+v %v", run.Runs, err)
+	}
 }
