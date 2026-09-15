@@ -7,6 +7,7 @@ package release
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/janearc/game/internal/bounce"
@@ -23,16 +24,22 @@ type Options struct {
 	Tag     string   // a tag to put on the public root at the release, or none
 }
 
-// Mark is the private commit the last release was cut from, kept as a
-// ref in the private repository so "since the last release" has a
-// meaning. It never appears in a public message.
-const Mark = "refs/game/released"
+// Mark is the private commit the last release to a public root was cut
+// from, kept as a ref in the private repository, one per root, so
+// "since the last release" means since the last release *there*: a
+// beta root and a stable root each remember their own. It never appears
+// in a public message.
+func Mark(public string) string {
+	name := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(public), ".git"), "-root")
+	return "refs/game/released/" + name
+}
 
-// Notes are the private commit subjects since the mark, for a release
-// message; each is swept and bounced before it may leave, since a
-// subject can name a person as easily as a file can. No mark, no notes.
-func Notes(r repo.Repo, words []string, author string) ([]string, []sweep.Hit, error) {
-	since, err := r.Git("rev-parse", "--verify", "-q", Mark)
+// Notes are the private commit subjects since the mark for a public
+// root, for a release message; each is swept and bounced before it may
+// leave, since a subject can name a person as easily as a file can. No
+// mark, no notes.
+func Notes(r repo.Repo, public string, words []string, author string) ([]string, []sweep.Hit, error) {
+	since, err := r.Git("rev-parse", "--verify", "-q", Mark(public))
 	if err != nil || since == "" {
 		return nil, nil, nil
 	}
@@ -124,7 +131,7 @@ func Run(r repo.Repo, o Options) (Result, error) {
 		return res, err
 	}
 	// the mark moves only once the release has landed.
-	if _, err := r.Git("update-ref", Mark, "HEAD"); err != nil {
+	if _, err := r.Git("update-ref", Mark(o.Public), "HEAD"); err != nil {
 		return res, err
 	}
 	if o.Tag != "" {

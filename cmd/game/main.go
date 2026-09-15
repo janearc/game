@@ -158,7 +158,7 @@ func main() {
 		fs.Parse(os.Args[2:])
 		ex := append(append([]string(nil), cfg.Exclude...), exclude...)
 		words := sweep.Words(cfg.Words)
-		notes, hits, e := release.Notes(r, words, cfg.Author)
+		notes, hits, e := release.Notes(r, *public, words, cfg.Author)
 		if e != nil {
 			err = e
 			break

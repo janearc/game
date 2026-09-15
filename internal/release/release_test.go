@@ -125,7 +125,7 @@ func TestReleaseRefuses(t *testing.T) {
 // a tag lands on the public root at the release.
 func TestNotesMarkAndTag(t *testing.T) {
 	r, pub := fixture(t)
-	if notes, _, _ := Notes(r, nil, "Ada"); len(notes) != 0 {
+	if notes, _, _ := Notes(r, pub, nil, "Ada"); len(notes) != 0 {
 		t.Fatalf("notes before any release: %v", notes)
 	}
 	if _, err := Run(r, Options{Public: pub, Message: "first", Tag: "v0.0.1"}); err != nil {
@@ -137,14 +137,17 @@ func TestNotesMarkAndTag(t *testing.T) {
 	os.WriteFile(filepath.Join(r.Dir, "c.txt"), []byte("more\n"), 0o644)
 	r.Git("add", "c.txt")
 	r.GitIn("", "commit", "-q", "-m", "the corner follows the phone")
-	notes, hits, err := Notes(r, nil, "Ada")
+	notes, hits, err := Notes(r, pub, nil, "Ada")
 	if err != nil || len(notes) != 1 || notes[0] != "the corner follows the phone" || len(hits) != 0 {
 		t.Fatalf("notes: %v %v %v", notes, hits, err)
+	}
+	if other, _, _ := Notes(r, filepath.Join(filepath.Dir(pub), "other-root.git"), nil, "Ada"); len(other) != 0 {
+		t.Errorf("another root should have its own mark, and none yet: %v", other)
 	}
 	os.WriteFile(filepath.Join(r.Dir, "d.txt"), []byte("x\n"), 0o644)
 	r.Git("add", "d.txt")
 	r.GitIn("", "commit", "-q", "-m", "Ada wanted this one")
-	_, hits, _ = Notes(r, nil, "Ada")
+	_, hits, _ = Notes(r, pub, nil, "Ada")
 	if len(hits) == 0 {
 		t.Error("a subject naming the author was not bounced")
 	}
