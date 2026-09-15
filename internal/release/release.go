@@ -34,11 +34,21 @@ func Mark(public string) string {
 	return "refs/game/released/" + name
 }
 
+// retire removes the one mark the first releases kept, refs/game/released,
+// which stands where the per-root marks now live; a repository that has
+// it starts its notes fresh.
+func retire(r repo.Repo) {
+	if _, err := r.Git("rev-parse", "--verify", "-q", "refs/game/released"); err == nil {
+		r.Git("update-ref", "-d", "refs/game/released")
+	}
+}
+
 // Notes are the private commit subjects since the mark for a public
 // root, for a release message; each is swept and bounced before it may
 // leave, since a subject can name a person as easily as a file can. No
 // mark, no notes.
 func Notes(r repo.Repo, public string, words []string, author string) ([]string, []sweep.Hit, error) {
+	retire(r)
 	since, err := r.Git("rev-parse", "--verify", "-q", Mark(public))
 	if err != nil || since == "" {
 		return nil, nil, nil
@@ -131,6 +141,7 @@ func Run(r repo.Repo, o Options) (Result, error) {
 		return res, err
 	}
 	// the mark moves only once the release has landed.
+	retire(r)
 	if _, err := r.Git("update-ref", Mark(o.Public), "HEAD"); err != nil {
 		return res, err
 	}

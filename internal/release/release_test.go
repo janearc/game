@@ -152,3 +152,21 @@ func TestNotesMarkAndTag(t *testing.T) {
 		t.Error("a subject naming the author was not bounced")
 	}
 }
+
+// a repository that kept the first releases' single mark releases
+// cleanly: the old ref is retired and the per-root mark takes its place.
+func TestOldMarkRetired(t *testing.T) {
+	r, pub := fixture(t)
+	if _, err := r.Git("update-ref", "refs/game/released", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(r, Options{Public: pub, Message: "m"}); err != nil {
+		t.Fatalf("release with the old mark present: %v", err)
+	}
+	if _, err := r.Git("rev-parse", "--verify", "-q", Mark(pub)); err != nil {
+		t.Error("the per-root mark was not set")
+	}
+	if _, err := r.Git("rev-parse", "--verify", "-q", "refs/game/released"); err == nil {
+		t.Error("the old mark is still there")
+	}
+}
