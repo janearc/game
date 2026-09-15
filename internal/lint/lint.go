@@ -113,39 +113,36 @@ var shout = regexp.MustCompile(`\b[A-Z]{5,}\b`)
 
 var allowed = map[string]bool{"ASCII": true, "ANSI": true, "HTTPS": true, "OKLAB": true, "OKLCH": true, "JSON": true, "MUST": true, "SHALL": true, "SHOULD": true, "NOTE": true, "TODO": true, "UTF8": true, "NOLINT": true, "NOCOLOR": true, "PANIC": true}
 
-// Run lints a module rooted at dir by the rules described.
+// Run lints a module rooted at dir by the rules described. What is
+// linted is what git tracks, since that is the definition of ours: a
+// toolchain fetched into an ignored directory is somebody else's prose.
+// Outside a repository every file under dir counts, except testdata
+// and bin.
 func (l Lint) Run(dir string) ([]Finding, error) {
-	var out []Finding
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	files, err := tracked(dir)
+	if err != nil {
+		files, err = walked(dir)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		name := d.Name()
-		if d.IsDir() {
-			if name != "." && (strings.HasPrefix(name, ".") || name == "bin" || name == "testdata" || name == "vendor") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, _ := filepath.Rel(dir, path)
+	}
+	var out []Finding
+	for _, rel := range files {
+		path := filepath.Join(dir, rel)
 		switch {
-		case strings.HasSuffix(name, ".go"):
+		case strings.HasSuffix(rel, ".go"):
 			f, e := l.goFile(path, rel)
 			if e != nil {
-				return e
+				return nil, e
 			}
 			out = append(out, f...)
-		case strings.HasSuffix(name, ".md"):
+		case strings.HasSuffix(rel, ".md"):
 			f, e := l.doc(path, rel)
 			if e != nil {
-				return e
+				return nil, e
 			}
 			out = append(out, f...)
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	if sc, e := exec.LookPath("staticcheck"); e == nil {
 		cmd := exec.Command(sc, "./...")
@@ -291,4 +288,45 @@ func width(line string) int {
 		}
 	}
 	return n
+}
+
+// tracked is every file git tracks under dir, relative to it, except
+// testdata; an error means dir is not a repository.
+func tracked(dir string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files", "-z")
+	cmd.Dir = dir
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, f := range strings.Split(string(b), "\x00") {
+		if f == "" || strings.HasPrefix(f, "testdata/") || strings.Contains(f, "/testdata/") {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// walked is every file under dir, for a directory that is not a
+// repository, skipping what a repository would ignore anyway.
+func walked(dir string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path != dir && (strings.HasPrefix(name, ".") || name == "bin" || name == "build" || name == "testdata" || name == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		out = append(out, rel)
+		return nil
+	})
+	return out, err
 }
