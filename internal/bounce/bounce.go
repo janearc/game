@@ -1,8 +1,10 @@
 // Package bounce keeps a repository in the first person: a change that
 // adds its author's name in the third person is refused until she signs
-// it off. The name is the repository author's, given by the caller; the
-// check is the name as a whole word in added lines, so identifiers keep
-// their case and are not names.
+// it off.
+//
+// The name is the repository author's, given by the caller; the check is
+// the name as a whole word in added lines, so identifiers keep their
+// case and are not names.
 package bounce
 
 import (
@@ -25,7 +27,8 @@ func Check(diff, name string) []Hit {
 	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `(?:'s)?\b`)
 	var hits []Hit
 	for _, line := range strings.Split(diff, "\n") {
-		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+		if !strings.HasPrefix(line, "+") ||
+			strings.HasPrefix(line, "+++") {
 			continue
 		}
 		if re.MatchString(line) {

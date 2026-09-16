@@ -1,0 +1,8 @@
+# game: this repository
+#
+# name is the project: it is the block in the builder's own config that
+# says where this tree's two remotes are. nothing here holds a remote,
+# and a builder who has no block for it builds locally.
+#
+# game's dist is janearc/game rather than a -dist, because game is game.
+name game

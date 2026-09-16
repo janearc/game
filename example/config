@@ -15,5 +15,17 @@ lint words hyperscaler enterprise-grade blazing-fast load-bearing
 # author   Your Name                 the bounce refuses this name in
 #                                    the third person
 # words    ~/.config/game/sweep.words one word per line the sweep refuses
-# public   ../project-root.git        where releases go, from the repo
 # exclude  spec-docs/                 left alone by the sweep; repeatable
+
+# a block per project you build, its lines indented under it. the
+# repository says which block is its own, with "name" in its .game, and
+# holds no remote and no value of its own.
+#
+# a project with no block here builds and nothing else: there is nowhere
+# for a release to go, so there is no release. that is how you try game on
+# a repository that is not yours.
+#
+# project yours
+# 	road ../yours-road.git            the dirty remote: every commit
+# 	dist git@github.com:you/yours.git the clean one: only game release
+# 	set CONTACT you@example.com       a value the repository asked for

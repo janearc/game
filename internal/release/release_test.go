@@ -20,7 +20,13 @@ func fixture(t *testing.T) (repo.Repo, string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = d
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t")
+		cmd.Env = append(
+			os.Environ(),
+			"GIT_AUTHOR_NAME=t",
+			"GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=t",
+			"GIT_COMMITTER_EMAIL=t@t.t",
+		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -28,9 +34,20 @@ func fixture(t *testing.T) (repo.Repo, string) {
 	os.MkdirAll(priv, 0o755)
 	run(priv, "init", "-q", "-b", "main")
 	run(priv, "config", "commit.gpgsign", "false")
+	// a container has no git identity, and these tests commit. naming
+	// one here is what makes the suite a property of the code rather
+	// than of the machine it happens to run on.
+	run(priv, "config", "user.email", "test@example.invalid")
+	run(priv, "config", "user.name", "test")
 	os.WriteFile(filepath.Join(priv, "a.txt"), []byte("hello\n"), 0o644)
 	run(priv, "add", "a.txt")
-	run(priv, "commit", "-q", "-m", "one\n\nCo-Auth"+"ored-By: someone <x@y.z>")
+	run(
+		priv,
+		"commit",
+		"-q",
+		"-m",
+		"one\n\nCo-Auth"+"ored-By: someone <x@y.z>",
+	)
 	os.WriteFile(filepath.Join(priv, "b.txt"), []byte("world\n"), 0o644)
 	run(priv, "add", "b.txt")
 	run(priv, "commit", "-q", "-m", "two")
@@ -51,159 +68,161 @@ func count(t *testing.T, r repo.Repo, rev string) int {
 	return n
 }
 
-// the first release is one commit with no parent and HEAD's tree; the
-// same tree again is nothing to release; a changed tree is a second
-// commit parented on the first, and the trailer in the private history
-// never reaches the public one.
-func TestReleaseAccumulates(t *testing.T) {
-	r, pub := fixture(t)
-	o := Options{Public: pub, Message: "as it stands"}
-	res, err := Run(r, o)
-	if err != nil {
-		t.Fatal(err)
+// preparing keeps a flat commit and pushes nothing; pushing sends it and
+// its tag; the same tree again is nothing new; a changed tree is a second
+// commit parented on the first; the trailer in the road never reaches
+// dist, and the message is the name and the tag and nothing else.
+func TestPrepareThenPush(t *testing.T) {
+	r, dist := fixture(t)
+	o := Options{Name: "x", Dist: dist, Tag: "v0.3.0"}
+	res, err := Prepare(r, o)
+	if err != nil || res.Skipped || res.Commit == "" {
+		t.Fatalf("prepare: %+v %v", res, err)
 	}
-	if res.Skipped || res.Commit == "" {
-		t.Fatalf("first release: %+v", res)
+	if main, _ := r.RemoteMain(dist); main != "" {
+		t.Fatal("prepare pushed")
 	}
-	if n := count(t, r, "flat"); n != 1 {
-		t.Errorf("flat has %d commits, want 1", n)
+	if _, err := Push(r, o); err != nil {
+		t.Fatalf("push: %v", err)
 	}
-	if tree, _ := r.Tree("HEAD"); tree != res.Tree {
-		t.Errorf("tree mismatch")
+	if main, _ := r.RemoteMain(dist); main != res.Commit {
+		t.Errorf("dist main is %q, want %q", main, res.Commit)
 	}
-	res2, err := Run(r, o)
-	if err != nil || !res2.Skipped {
-		t.Fatalf("second release should skip: %+v %v", res2, err)
+	if tags, _ := r.Git("ls-remote", "--tags", dist); !strings.Contains(
+		tags,
+		"v0.3.0",
+	) {
+		t.Errorf("the tag did not land: %q", tags)
+	}
+	if local, _ := r.Git("tag", "-l", "v0.3.0"); local != "" {
+		t.Error("the tag was left in the road")
+	}
+	msg, _ := r.Git("log", "-1", "--format=%B", res.Commit)
+	if strings.TrimSpace(msg) != "x v0.3.0" {
+		t.Errorf("message = %q, want only the name and the tag", msg)
 	}
 	os.WriteFile(filepath.Join(r.Dir, "c.txt"), []byte("more\n"), 0o644)
 	r.Git("add", "c.txt")
 	r.GitIn("", "commit", "-q", "-m", "three")
-	res3, err := Run(r, o)
-	if err != nil || res3.Skipped {
-		t.Fatalf("third release: %+v %v", res3, err)
+	o.Tag = "v0.3.1"
+	res2, err := Prepare(r, o)
+	if err != nil || res2.Skipped {
+		t.Fatalf("second prepare: %+v %v", res2, err)
 	}
-	if n := count(t, r, "flat"); n != 2 {
-		t.Errorf("flat has %d commits after a change, want 2", n)
+	if _, err := Push(r, o); err != nil {
+		t.Fatal(err)
 	}
-	log, _ := r.Git("log", "flat", "--format=%B")
+	if n := count(t, r, res2.Commit); n != 2 {
+		t.Errorf("dist has %d commits after a change, want 2", n)
+	}
+	log, _ := r.Git("log", res2.Commit, "--format=%B")
 	if strings.Contains(log, "Co-Auth"+"ored-By") {
-		t.Error("the trailer reached the public history")
+		t.Error("the trailer reached dist")
 	}
 }
 
-// a dirty tree is refused before anything is built; a planted machine
-// path is found and the push does not happen; an excluded prefix is
-// left alone.
-func TestReleaseRefuses(t *testing.T) {
-	r, pub := fixture(t)
+// a push with nothing prepared is refused, and so is a push after dist's
+// main moved underneath the prepared release.
+func TestPushRefuses(t *testing.T) {
+	r, dist := fixture(t)
+	if _, err := Push(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err == nil {
+		t.Fatal("pushed a release that was never prepared")
+	}
+	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := r.GitIn("elsewhere\n", "commit-tree", "HEAD^{tree}")
+	if _, err := r.Git("push", dist, other+":refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Push(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err == nil {
+		t.Error("pushed over a dist main that moved")
+	}
+}
+
+// a dirty tree, a missing tag, a machine path and a setting's value each
+// refuse before anything is kept; an excluded prefix is left alone.
+func TestPrepareRefuses(t *testing.T) {
+	r, dist := fixture(t)
+	if _, err := Prepare(r, Options{Name: "x", Dist: dist}); err == nil {
+		t.Error("prepared without a tag")
+	}
 	os.WriteFile(filepath.Join(r.Dir, "dirty.txt"), []byte("x"), 0o644)
-	if _, err := Run(r, Options{Public: pub, Message: "m"}); err == nil {
-		t.Fatal("a dirty tree released")
+	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err == nil {
+		t.Fatal("a dirty tree prepared")
 	}
 	os.Remove(filepath.Join(r.Dir, "dirty.txt"))
-	os.WriteFile(filepath.Join(r.Dir, "notes.md"), []byte("see /Us"+"ers/someone/thing\n"), 0o644)
+	os.WriteFile(
+		filepath.Join(r.Dir, "notes.md"),
+		[]byte("see /Us"+"ers/someone/thing\n"),
+		0o644,
+	)
 	r.Git("add", "notes.md")
 	r.GitIn("", "commit", "-q", "-m", "a path")
-	res, err := Run(r, Options{Public: pub, Message: "m"})
+	res, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1"})
 	if err == nil || len(res.Hits) == 0 {
 		t.Fatalf("a machine path was not found: %+v %v", res, err)
 	}
-	if main, _ := r.RemoteMain(pub); main != "" {
-		t.Error("a refused release was pushed")
+	if _, err := r.Git("rev-parse", "--verify", "-q", Ref("v1")); err == nil {
+		t.Error("a refused release was kept")
 	}
-	res, err = Run(r, Options{Public: pub, Message: "m", Exclude: []string{"notes.md"}})
-	if err != nil {
+	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1", Exclude: []string{"notes.md"}}); err != nil {
 		t.Fatalf("an excluded file still refused: %v", err)
 	}
-	if main, _ := r.RemoteMain(pub); main != res.Commit {
-		t.Error("the release did not land")
+	os.WriteFile(
+		filepath.Join(r.Dir, "conf.md"),
+		[]byte("contact ada@example.invalid\n"),
+		0o644,
+	)
+	r.Git("add", "conf.md")
+	r.GitIn("", "commit", "-q", "-m", "a value")
+	res, err = Prepare(
+		r,
+		Options{
+			Name:    "x",
+			Dist:    dist,
+			Tag:     "v2",
+			Exclude: []string{"notes.md"},
+			Values:  []string{"ada@example.invalid"},
+		},
+	)
+	found := false
+	for _, h := range res.Hits {
+		found = found || h.Kind == "a setting's value"
+	}
+	if err == nil || !found {
+		t.Fatalf("a setting's value was not refused: %+v %v", res, err)
 	}
 }
 
-// after a release the mark is set, so the next release's notes are the
-// subjects since; a subject that names the author refuses the notes;
-// a tag lands on the public root at the release.
-func TestNotesMarkAndTag(t *testing.T) {
-	r, pub := fixture(t)
-	if notes, _, _ := Notes(r, pub, nil, "Ada"); len(notes) != 0 {
-		t.Fatalf("notes before any release: %v", notes)
+// a licence is the one file whose job is to name the author; anywhere else
+// in the tree the name refuses a release, and a handle is not the name.
+func TestAuthor(t *testing.T) {
+	r, dist := fixture(t)
+	os.WriteFile(
+		filepath.Join(r.Dir, "LICENSE.txt"),
+		[]byte("Copyright Ada.\n"),
+		0o644,
+	)
+	os.WriteFile(
+		filepath.Join(r.Dir, "go.md"),
+		[]byte("module github.com/adalovelace/x\n"),
+		0o644,
+	)
+	r.Git("add", "LICENSE.txt", "go.md")
+	r.GitIn("", "commit", "-q", "-m", "licence")
+	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1", Author: "Ada"}); err != nil {
+		t.Fatalf("the licence or the handle refused a release: %v", err)
 	}
-	if _, err := Run(r, Options{Public: pub, Message: "first", Tag: "v0.0.1"}); err != nil {
-		t.Fatal(err)
-	}
-	if tags, _ := r.Git("ls-remote", "--tags", pub); !strings.Contains(tags, "v0.0.1") {
-		t.Errorf("the tag did not land: %q", tags)
-	}
-	os.WriteFile(filepath.Join(r.Dir, "c.txt"), []byte("more\n"), 0o644)
-	r.Git("add", "c.txt")
-	r.GitIn("", "commit", "-q", "-m", "the corner follows the phone")
-	notes, hits, err := Notes(r, pub, nil, "Ada")
-	if err != nil || len(notes) != 1 || notes[0] != "the corner follows the phone" || len(hits) != 0 {
-		t.Fatalf("notes: %v %v %v", notes, hits, err)
-	}
-	if other, _, _ := Notes(r, filepath.Join(filepath.Dir(pub), "other-root.git"), nil, "Ada"); len(other) != 0 {
-		t.Errorf("another root should have its own mark, and none yet: %v", other)
-	}
-	os.WriteFile(filepath.Join(r.Dir, "d.txt"), []byte("x\n"), 0o644)
-	r.Git("add", "d.txt")
-	r.GitIn("", "commit", "-q", "-m", "Ada wanted this one")
-	_, hits, _ = Notes(r, pub, nil, "Ada")
-	if len(hits) == 0 {
-		t.Error("a subject naming the author was not bounced")
-	}
-}
-
-// a release already out there, untagged, gets its tag when asked: the
-// second run skips the commit and still names the first one.
-func TestTagOnUnchangedTree(t *testing.T) {
-	r, pub := fixture(t)
-	first, err := Run(r, Options{Public: pub, Message: "first"})
-	if err != nil || first.Skipped {
-		t.Fatalf("first release: %+v %v", first, err)
-	}
-	again, err := Run(r, Options{Public: pub, Message: "named", Tag: "v0.2.0"})
-	if err != nil || !again.Skipped || again.Commit != first.Commit {
-		t.Fatalf("second run should skip and point at the first: %+v %v", again, err)
-	}
-	tags, _ := r.Git("ls-remote", "--tags", pub)
-	if !strings.Contains(tags, first.Commit) || !strings.Contains(tags, "v0.2.0") {
-		t.Errorf("the tag did not land on the released commit: %q", tags)
-	}
-}
-
-// a repository that kept the first releases' single mark releases
-// cleanly: the old ref is retired and the per-root mark takes its place.
-func TestOldMarkRetired(t *testing.T) {
-	r, pub := fixture(t)
-	if _, err := r.Git("update-ref", "refs/game/released", "HEAD"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Run(r, Options{Public: pub, Message: "m"}); err != nil {
-		t.Fatalf("release with the old mark present: %v", err)
-	}
-	if _, err := r.Git("rev-parse", "--verify", "-q", Mark(pub)); err != nil {
-		t.Error("the per-root mark was not set")
-	}
-	if _, err := r.Git("rev-parse", "--verify", "-q", "refs/game/released"); err == nil {
-		t.Error("the old mark is still there")
-	}
-}
-
-// the author's name in the tree refuses a release, the way the bounce
-// refuses it in a change; the handle in a module path is not the name.
-func TestAuthorInTheTree(t *testing.T) {
-	r, pub := fixture(t)
-	os.WriteFile(filepath.Join(r.Dir, "notes.md"), []byte("Ada asked for this.\nmodule github.com/adalovelace/x\n"), 0o644)
-	r.Git("add", "notes.md")
-	r.GitIn("", "commit", "-q", "-m", "notes")
-	res, err := Run(r, Options{Public: pub, Message: "m", Author: "Ada"})
-	if err == nil || len(res.Hits) == 0 {
-		t.Fatalf("the author's name in the tree released: %+v %v", res, err)
-	}
-	os.WriteFile(filepath.Join(r.Dir, "notes.md"), []byte("the operation as asked for.\nmodule github.com/adalovelace/x\n"), 0o644)
-	r.Git("add", "notes.md")
-	r.GitIn("", "commit", "-q", "-m", "first person")
-	if _, err := Run(r, Options{Public: pub, Message: "m", Author: "Ada"}); err != nil {
-		t.Fatalf("the handle was taken for the name: %v", err)
+	os.WriteFile(
+		filepath.Join(r.Dir, "README.md"),
+		[]byte("Ada wrote this.\n"),
+		0o644,
+	)
+	r.Git("add", "README.md")
+	r.GitIn("", "commit", "-q", "-m", "readme")
+	if res, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v2", Author: "Ada"}); err == nil ||
+		len(res.Hits) == 0 {
+		t.Fatalf("the author in the readme released: %+v %v", res, err)
 	}
 }
