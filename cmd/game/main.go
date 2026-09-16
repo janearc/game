@@ -262,7 +262,15 @@ func main() {
 				usage()
 				os.Exit(2)
 			}
-			err = releasePush(r, cfg, os.Args[3])
+			fs := flag.NewFlagSet("release push", flag.ExitOnError)
+			publish := fs.Bool(
+				"publish",
+				false,
+				"say it out loud: this dist is a remote and "+
+					"pushing to it publishes",
+			)
+			fs.Parse(os.Args[4:])
+			err = releasePush(r, cfg, os.Args[3], *publish)
 			break
 		}
 		fs := flag.NewFlagSet("release", flag.ExitOnError)
@@ -758,7 +766,12 @@ func export(r repo.Repo, commit, dir string) error {
 
 // releasePush is game release push TAG: the prepared release to dist, the
 // one thing that ever reaches it.
-func releasePush(r repo.Repo, cfg config.Config, tag string) error {
+func releasePush(
+	r repo.Repo,
+	cfg config.Config,
+	tag string,
+	publish bool,
+) error {
 	name := project(r, cfg)
 	mine, held := cfg.Mine()
 	dist := mine.Dist
@@ -773,6 +786,17 @@ func releasePush(r repo.Repo, cfg config.Config, tag string) error {
 	}
 	if err := guard(r, dist); err != nil {
 		return err
+	}
+	if remote(dist) && !publish {
+		return fmt.Errorf(
+			"%s is not a path on this machine, so this push "+
+				"publishes. that is a deliberate act and it "+
+				"wants the word: game release push %s "+
+				"--publish. preparing a release needs no "+
+				"such thing",
+			dist,
+			tag,
+		)
 	}
 	res, err := release.Push(
 		r,
@@ -1471,4 +1495,21 @@ func buildDocker(r repo.Repo, cfg config.Config) error {
 		path,
 	)
 	return nil
+}
+
+// remote says whether a dist lives somewhere other than this machine.
+//
+// a local bare repository is its own safety: being wrong writes to a
+// directory. a url is not, so pushing to one is the step that wants to be
+// typed on purpose rather than reached by running the next command in a
+// sequence.
+func remote(dist string) bool {
+	for _, p := range []string{
+		"http://", "https://", "ssh://", "git://",
+	} {
+		if strings.HasPrefix(dist, p) {
+			return true
+		}
+	}
+	return strings.Contains(dist, "@") && strings.Contains(dist, ":")
 }
