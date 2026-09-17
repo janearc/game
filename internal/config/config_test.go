@@ -79,7 +79,7 @@ func TestParseRefuses(t *testing.T) {
 // the word list, which it may not set; missing files are fine.
 func TestLoadOrder(t *testing.T) {
 	home, repo := t.TempDir(), t.TempDir()
-	c, err := Load(home, repo)
+	c, err := Load(home, home, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestLoadOrder(t *testing.T) {
 		[]byte("name a\nwords ~/theirs\nexclude two/\n"),
 		0o644,
 	)
-	c, err = Load(home, repo)
+	c, err = Load(home, home, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestLoadOrder(t *testing.T) {
 		[]byte("lint print\n"),
 		0o644,
 	)
-	c, _ = Load(home, repo)
+	c, _ = Load(home, home, repo)
 	if len(c.Lint) != 1 || c.Lint[0].Name != "print" {
 		t.Fatalf(
 			"a repository's lint should replace the "+
@@ -139,7 +139,7 @@ func TestLoadOrder(t *testing.T) {
 		[]byte("colour blue\n"),
 		0o644,
 	)
-	if _, err := Load(home, repo); err == nil ||
+	if _, err := Load(home, home, repo); err == nil ||
 		!strings.Contains(err.Error(), "unknown key") {
 		t.Fatalf("an unknown key in .game loaded: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestNeedsAndSet(t *testing.T) {
 	game := "needs CONTACT who the providers can reach\n" +
 		"needs REGION where it runs\n"
 	os.WriteFile(filepath.Join(repo, ".game"), []byte(game), 0o644)
-	c, err := Load(home, repo)
+	c, err := Load(home, home, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestNeedsAndSet(t *testing.T) {
 		[]byte("set CONTACT me\n"),
 		0o644,
 	)
-	if _, err := Load(home, repo); err == nil {
+	if _, err := Load(home, home, repo); err == nil {
 		t.Error("a value in a repository loaded")
 	}
 	os.WriteFile(filepath.Join(repo, ".game"), []byte(""), 0o644)
@@ -220,7 +220,7 @@ func TestNeedsAndSet(t *testing.T) {
 		[]byte("needs X why\n"),
 		0o644,
 	)
-	if _, err := Load(home, repo); err == nil {
+	if _, err := Load(home, home, repo); err == nil {
 		t.Error("a declaration in the dotfile loaded")
 	}
 }
@@ -257,7 +257,7 @@ func TestProjectBlocksAndLocalOnly(t *testing.T) {
 		0o644,
 	)
 	os.WriteFile(filepath.Join(repo, ".game"), []byte("name a\n"), 0o644)
-	c, err := Load(home, repo)
+	c, err := Load(home, home, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestProjectBlocksAndLocalOnly(t *testing.T) {
 	// the same dotfile, a repository the builder does not describe
 	other := t.TempDir()
 	os.WriteFile(filepath.Join(other, ".game"), []byte("name c\n"), 0o644)
-	c, err = Load(home, other)
+	c, err = Load(home, home, other)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,5 +316,33 @@ func TestStrictest(t *testing.T) {
 	}
 	if len(got) != 4 {
 		t.Errorf("got %d rules, want 4: %v", len(got), got)
+	}
+}
+
+// TestLoadReadsOneHomeAndExpandsAnother: an agent's config lives in its
+// own directory and names shared roads with a ~, which still means the
+// machine's user. without this an agent reading a shared road is sent to
+// the same path under its own directory, where nothing is.
+func TestLoadReadsOneHomeAndExpandsAnother(t *testing.T) {
+	whose, home, repo := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(
+		filepath.Join(whose, ".config", "game"), 0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(whose, ".config", "game", "config"),
+		[]byte("project thing\n\troad ~/roads/thing.git\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(whose, home, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "roads", "thing.git")
+	if got := c.Projects["thing"].Road; got != want {
+		t.Errorf("road %q, want %q", got, want)
 	}
 }

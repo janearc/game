@@ -104,7 +104,7 @@ func main() {
 		os.Exit(2)
 	}
 	r := repo.Repo{Dir: cwd()}
-	cfg, err := config.Load(os.Getenv("HOME"), r.Dir)
+	cfg, err := config.Load(gameHome(), os.Getenv("HOME"), r.Dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "game:", err)
 		os.Exit(2)
@@ -1512,4 +1512,18 @@ func remote(dist string) bool {
 		}
 	}
 	return strings.Contains(dist, "@") && strings.Contains(dist, ":")
+}
+
+// gameHome is whose config this run reads: GAME_HOME when it is set, and
+// the shell's HOME otherwise.
+//
+// an agent has an anchor of its own and wants its own roads, dists and
+// settings; a person in a shell wants theirs. faking HOME would do it and
+// would take ssh keys, gh credentials and everything else along with it,
+// so the build tool asks for the one thing it needs instead.
+func gameHome() string {
+	if at := os.Getenv("GAME_HOME"); at != "" {
+		return at
+	}
+	return os.Getenv("HOME")
 }

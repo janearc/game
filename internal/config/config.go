@@ -303,9 +303,16 @@ func Defaults(home, repo string) Config {
 // lines replace the dotfile's, so a repository can say exactly which
 // rules it holds to today, and the dotfile is what a repository that
 // says nothing gets.
-func Load(home, repo string) (Config, error) {
+//
+// It reads the config at whose and expands ~ against home. They are one
+// directory for a person in a shell.
+//
+// For an agent they are not: the config is the agent's, in its anchor,
+// and a ~ in it still means this machine's user, since the roads it
+// names belong to the estate rather than to the agent.
+func Load(whose, home, repo string) (Config, error) {
 	c := Defaults(home, repo)
-	dotfile := filepath.Join(home, ".config", "game", "config")
+	dotfile := filepath.Join(whose, ".config", "game", "config")
 	if err := c.fold(dotfile, home, true); err != nil {
 		return c, err
 	}
