@@ -8,8 +8,18 @@
 #   sh bootstrap.sh install      also links it as ~/.local/bin/game
 set -e
 cd "$(dirname "$0")"
-echo "0: go build ./cmd/game"
-go build -o bin/game ./cmd/game
+# the same two -ldflags game passes for itself. a binary that cannot say
+# which commit it is is a binary whose output cannot be traced back to a
+# tree, and this is the one build in the estate that go does rather than
+# game, so it is the one place an unstamped binary can enter.
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+	commit="$commit-dirty"
+fi
+built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "0: go build ./cmd/game ($commit)"
+go build -ldflags "-X main.build=$commit -X main.built=$built" \
+	-o bin/game ./cmd/game
 echo "1: bin/game check"
 bin/game check
 echo "1: bin/game build"

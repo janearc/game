@@ -477,6 +477,9 @@ func releasePrepare(
 	tag string,
 	mean bool,
 ) error {
+	if err := stamped(); err != nil {
+		return err
+	}
 	name := project(r, cfg)
 	mine, held := cfg.Mine()
 	dist := mine.Dist
@@ -563,6 +566,24 @@ func releasePrepare(
 	return nil
 }
 
+// stamped refuses to cut or send a release from a binary that cannot say
+// which commit it came from.
+//
+// a release is a claim about a tree, and a tool that cannot name itself
+// cannot be traced back to the tree that made it. bootstrap and game
+// build both stamp; only a hand-typed go build does not.
+func stamped() error {
+	if built != "" && build != "dev" {
+		return nil
+	}
+	return fmt.Errorf(
+		"this game was built by go rather than by game, so it cannot " +
+			"say which commit it is. a release is a claim and it " +
+			"wants a tool with provenance: run sh " +
+			"bootstrap.sh, or game build, and try again",
+	)
+}
+
 // values is the builder's setting values, which a release refuses to
 // carry: they are the builder's, and the release is everybody's.
 func values(cfg config.Config) []string {
@@ -587,6 +608,9 @@ func releaseStack(
 	from string,
 	mean bool,
 ) error {
+	if err := stamped(); err != nil {
+		return err
+	}
 	name := project(r, cfg)
 	mine, held := cfg.Mine()
 	if !held || mine.Dist == "" {
@@ -785,6 +809,9 @@ func releasePush(
 		)
 	}
 	if err := guard(r, dist); err != nil {
+		return err
+	}
+	if err := stamped(); err != nil {
 		return err
 	}
 	if remote(dist) && !publish {
