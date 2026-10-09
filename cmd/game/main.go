@@ -1,43 +1,59 @@
-// game: the verbs a go project needs that go itself does not know are
-// things. check, build, release, bounce, sweep, version. it runs in any
-// shell and needs git and go and nothing else; there is no makefile
-// because there is nothing left for one to say.
+// game is the verbs a go project needs that go itself does not know it
+// needs: check, build, release, bounce, sweep and version. it runs in any
+// shell and needs only git and go. there is no makefile, because game
+// does everything a makefile would.
 //
-// the window it will one day draw in is another program's business.
+// game only prints text. if it ever draws in a window, another program
+// will do the drawing.
 //
 //	game check                    gofmt -l, go vet, go test, exit code kept
 //	game build                    every cmd/* into bin/, stamped with the
-//	                              commit and the time it was built
+//	                              commit and the commit's time; the
+//	                              same sources build the same bytes
 //	game build NAME               a target the config describes: its steps
 //	                              in order, in its directory, under nice,
 //	                              the output kept in bin/NAME.log
 //	game clean [--cache]          go clean, and bin/ away; --cache also
 //	                              forgets go's build and test caches
-//	game lint [--look]            whatever lint the config describes,
-//	                              with `lint` lines; nothing described
-//	                              is no lint. wide code and shouting are
-//	                              counted, and listed with --look
+//	game lint [--look]            the rules in your config's `lint`
+//	                              lines. wide code and shouting are
+//	                              counted, and --look lists them
 //	game trees                    the road and the dist for this project
 //	game push                     the branch to the road, the dirty remote
+//	game stick                    claims this repository and pushes the
+//	                              claim, refusing on main or a claim
+//	                              someone else already holds
+//	game sticky                   fast-forwards this branch to the road's
+//	                              tip; every build after does the same
+//	game unstick                  releases the claim and pushes that
 //	game release TAG [--i-mean-it]
-//	                              every check, the lint at zero findings,
-//	                              then a flat commit kept for its push
-//	game release push TAG         that commit and its tag to dist, the
-//	                              clean remote, and nothing else goes there
+//	                              runs every check, needs zero lint
+//	                              findings, then makes one flat commit
+//	game release push TAG         pushes that commit and its tag to dist,
+//	                              the clean remote; nothing else goes there
 //	game run NAME                 a run the config describes, in the
 //	                              foreground, in your terminal, not nice'd;
-//	                              tmux's variables are dropped, since a
-//	                              window is not inside your tmux
-//	game bounce [RANGE]           what is staged, or a commit or range
-//	game sweep [REV]              the tree at a revision, default HEAD
-//	game version                  which commit this binary is, and its age
+//	                              tmux's variables are removed, so a
+//	                              program that opens its own window
+//	                              doesn't think it is inside tmux
+//	game bounce [RANGE]           stops what is staged, or a commit or
+//	                              range, that mentions the author in
+//	                              the third person, until the author
+//	                              approves it
+//	game sweep [REV]              checks the tree at a revision (default
+//	                              HEAD) for what must not ship
+//	game version                  which commit this binary is, and how
+//	                              old that commit is
 //
-// settings come from ~/.config/game/config, the builder's, and then .game
-// in the repository, one per line; the word list, the remotes and the
-// values are the builder's alone, and a repository never holds them:
+// settings come from your ~/.config/game/config first, then from .game
+// in the repository, one setting per line. the never-words list, the
+// remotes and the values live only in your config. a repository never
+// holds them. in ~/.config/game/config:
 //
-//	author  Ada                         the name the bounce refuses
-//	words   ~/.config/game/sweep.words  the sweep's word list
+//	author  Ada                         your name; bounce holds changes
+//	                                    that use it in the third person
+//	words   ~/.config/game/sweep.words  the never-words, baked in by
+//	                                    cmd/never when game is built
 //
 // and a block per project you build, its lines indented under it:
 //
@@ -46,18 +62,19 @@
 //		dist git@github.com:ada/game its clean remote: game release
 //		set CONTACT ada@example.com  a value it needs
 //
-// A tree whose project has no block here builds and nothing else. There
-// is nowhere for a release to go, so there is no release: that is the
-// definition rather than a check, and it is how game is tried on a
-// repository that is not yours.
+// if your config has no block for a project, game can still check, build,
+// lint and sweep it, but it can't push or release it, because there is
+// nowhere to send it. that makes game safe to run on a repository that
+// isn't yours, like one you cloned to try.
 //
 // and in .game, the repository's:
 //
-//	name    game                        the project, which is its block
+//	name    game                        the project, which picks its block
 //	needs   CONTACT who to reach        a setting it needs, and why
 //	exclude spec-docs/                  left alone by the sweep; repeatable
-//	lint    width 80                    a lint rule; repeatable. a .game
-//	                                    that has any replaces the dotfile's
+//	lint    width 80                    a lint rule; repeatable. any lint
+//	                                    line here replaces all of your
+//	                                    config's lint rules
 //	target  NAME DIR :: COMMAND ...     a build beyond go's; one line per
 //	                                    step, in order. test and test-*
 //	                                    targets run before every release
@@ -82,20 +99,27 @@ import (
 	"github.com/janearc/game/internal/release"
 	"github.com/janearc/game/internal/repo"
 	"github.com/janearc/game/internal/stack"
+	"github.com/janearc/game/internal/sticky"
 	"github.com/janearc/game/internal/sweep"
 )
 
-// build and built are stamped by the makefile.
+// game build and bootstrap stamp build with the commit, and built with
+// the commit's time.
 var (
 	build = "dev"
 	built = ""
 )
 
-// cwd is the repository: where game was run.
+// cwd is the directory game was run in, which is the repository.
 func cwd() string {
 	d, _ := os.Getwd()
 	return d
 }
+
+// neverWords returns the never-words this run sweeps with. cmd/never
+// bakes them in when game is built. the tests build from a tree with
+// none, so they set made-up words here.
+var neverWords = sweep.Baked
 
 // main is the verb table; each verb is a function below.
 func main() {
@@ -104,14 +128,15 @@ func main() {
 		os.Exit(2)
 	}
 	r := repo.Repo{Dir: cwd()}
-	cfg, err := config.Load(gameHome(), os.Getenv("HOME"), r.Dir)
+	cfg, err := config.Load(config.Whose(), os.Getenv("HOME"), r.Dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "game:", err)
 		os.Exit(2)
 	}
-	// the settings a repository needs reach what game runs as environment,
-	// from the builder's dotfile, and only those; a build or a run that
-	// needs one that is not set refuses with the reason it is needed.
+	// the settings this repository needs are copied from your config into
+	// the environment of whatever game runs, and no others. a build or a
+	// run that needs a setting you haven't set refuses, and says why the
+	// setting is needed.
 	for _, kv := range cfg.Env() {
 		k, v, _ := strings.Cut(kv, "=")
 		os.Setenv(k, v)
@@ -155,7 +180,7 @@ func main() {
 			}
 			break
 		}
-		if err = buildBinaries(r); err == nil {
+		if err = buildBinaries(r, cfg); err == nil {
 			paint(r, cfg)
 		}
 	case "verify":
@@ -181,10 +206,10 @@ func main() {
 			break
 		}
 		if l.Empty() {
-			fmt.Println(
-				"lint: nothing described; add lint " +
-					"lines to ~/.config/game/config or " +
-					".game",
+			fmt.Fprintln(os.Stderr,
+				"lint: hey buddy, i live to lint. where is "+
+					"that config? add lint lines to "+
+					"~/.config/game/config or .game",
 			)
 			break
 		}
@@ -193,12 +218,10 @@ func main() {
 			err = e
 			break
 		}
-		fix, looks := 0, map[string]int{}
+		looks := map[string]int{}
 		for _, f := range found {
 			if f.Look {
 				looks[f.Rule]++
-			} else {
-				fix++
 			}
 			if !*count {
 				fmt.Println(f)
@@ -207,9 +230,11 @@ func main() {
 		for rule, n := range looks {
 			fmt.Printf("look: %d %s\n", n, rule)
 		}
-		if fix > 0 {
-			err = fmt.Errorf("lint: %d to fix", fix)
-		} else if len(looks) == 0 {
+		// lint.Verdict decides the exit code. it is its own function
+		// so that a test can call it; see its comment.
+		if _, _, e := lint.Verdict(found); e != nil {
+			err = e
+		} else {
 			fmt.Println("lint: clean")
 		}
 	case "clean":
@@ -225,16 +250,19 @@ func main() {
 	case "trees":
 		mine, held := cfg.Mine()
 		if !held {
-			fmt.Printf(
-				"no project block for %s: a local build\n",
-				project(r, cfg),
-			)
+			fmt.Printf("a local build: %v\n", cfg.NoBlock())
 		}
-		fmt.Printf("road: %s\n", orNone(mine.Road))
-		fmt.Printf("dist: %s\n", orNone(mine.Dist))
+		fmt.Printf("road: %s\n", orNone(mine.Road, cfg.Dotfile))
+		fmt.Printf("dist: %s\n", orNone(mine.Dist, cfg.Dotfile))
 		err = guard(r, mine.Dist)
 	case "push":
 		err = pushRoad(r, cfg)
+	case "stick":
+		err = doStick(r, cfg)
+	case "sticky":
+		err = doSticky(r, cfg)
+	case "unstick":
+		err = doUnstick(r, cfg)
 	case "release":
 		if len(os.Args) > 2 && os.Args[2] == "stack" {
 			if len(os.Args) < 4 {
@@ -255,6 +283,14 @@ func main() {
 			)
 			fs.Parse(os.Args[4:])
 			err = releaseStack(r, cfg, os.Args[3], *from, *mean)
+			break
+		}
+		if len(os.Args) > 2 && os.Args[2] == "diff" {
+			tag := ""
+			if len(os.Args) > 3 {
+				tag = os.Args[3]
+			}
+			err = releaseDiff(r, cfg, tag)
 			break
 		}
 		if len(os.Args) > 2 && os.Args[2] == "push" {
@@ -332,10 +368,11 @@ func main() {
 		if err != nil {
 			break
 		}
+		never := neverWords()
 		th, e := sweep.Tree(
 			r,
 			rev,
-			sweep.Words(cfg.Words),
+			never,
 			cfg.Author,
 			cfg.SweepAllow,
 			cfg.Exclude...)
@@ -344,13 +381,20 @@ func main() {
 			break
 		}
 		hits = append(hits, th...)
-		if len(hits) == 0 {
-			fmt.Printf("sweep: %s is clean\n", rev)
-		} else {
-			for _, h := range hits {
-				fmt.Printf("sweep: %s in %s\n", h.Kind, h.File)
-			}
+		for _, h := range hits {
+			fmt.Printf("sweep: %s in %s\n", h.Kind, h.File)
+		}
+		// a sweep with no never-words can't check for them, so it
+		// never reports clean.
+		switch {
+		case len(hits) > 0:
 			err = fmt.Errorf("%d hit(s)", len(hits))
+		case never.Empty():
+			err = fmt.Errorf("%s has none of the fixed "+
+				"patterns, but this game was built without "+
+				"never-words, so none were looked for", rev)
+		default:
+			fmt.Printf("sweep: %s is clean\n", rev)
 		}
 	default:
 		usage()
@@ -362,72 +406,58 @@ func main() {
 	}
 }
 
-// usage is the one line to type when the verb was wrong.
+// usage prints the usage. the caller exits.
 func usage() {
 	fmt.Fprintln(
 		os.Stderr,
 		"game check | build [NAME] | run NAME | clean "+
 			"[--cache] | lint [--look] |\n"+
-			"trees | push | release TAG [--i-mean-it] | "+
-			"release push TAG |\n"+
+			"trees | push | stick | sticky | unstick | "+
+			"release TAG [--i-mean-it] | release push TAG | "+
+			"release diff |\n"+
 			"     bounce [RANGE] | sweep [REV] | version",
 	)
 }
 
-// age is which commit this binary is and how long ago it was built.
+// age says which commit this binary was built from, and how old that
+// commit is.
 //
-// a binary go built carries neither, and says so in words: the stamp is
-// two -ldflags that only game passes, so an unstamped binary is one built
-// straight out of a tree, which is fine and worth knowing.
+// built is the commit's time, not the time of the build. the same sources
+// always make the same bytes, so a build has no time of its own.
 func age() string {
+	// we weren't built by game, so we give them this.
 	if built == "" && build == "dev" {
 		return "game, built from a tree by go rather than by game: " +
-			"no commit and no build time in it"
+			"no commit and no commit time in it"
 	}
 	if built == "" {
 		return fmt.Sprintf(
-			"game %s, with no build time in it", build,
+			"game %s, with no commit time in it", build,
 		)
 	}
 	t, err := time.Parse(time.RFC3339, built)
 	if err != nil {
-		return fmt.Sprintf("game %s, built at %s", build, built)
+		return fmt.Sprintf("game %s, committed at %s", build, built)
 	}
 	return fmt.Sprintf(
-		"game %s, built %s ago",
+		"game %s, committed %s ago",
 		build,
 		time.Since(t).Round(time.Second),
 	)
 }
 
-// project is the project's name, which keys its remotes in the builder's
-// config: .game's name, else the module path's last element, else the
-// directory, since a checkout is named for whoever holds it.
+// project returns the project's name, which finds its remotes in your
+// config. config.Load chose it from .game's name line, go.mod's module or
+// the directory's name, so every message and every lookup uses the same
+// name. cfg.NamedBy says which of those it came from.
 func project(r repo.Repo, cfg config.Config) string {
-	if cfg.Name != "" {
-		return cfg.Name
-	}
-	if mod, err := os.ReadFile(filepath.Join(r.Dir, "go.mod")); err == nil {
-		for _, line := range strings.Split(string(mod), "\n") {
-			if strings.HasPrefix(line, "module ") {
-				return filepath.Base(
-					strings.TrimSpace(
-						strings.TrimPrefix(
-							line,
-							"module ",
-						),
-					),
-				)
-			}
-		}
-	}
-	return filepath.Base(r.Dir)
+	return cfg.Named
 }
 
-// orNone is a remote, or a word saying there is none.
-func orNone(url string) string {
+// orNone returns a remote, or says there is none and where to add it.
+func orNone(url, dotfile string) string {
 	if url == "" {
-		return "(none; add it to ~/.config/game/config)"
+		return "(none; add it to " + dotfile + ")"
 	}
 	return url
 }
@@ -436,16 +466,12 @@ func orNone(url string) string {
 // says so first, so a push is never mistaken for a release.
 func pushRoad(r repo.Repo, cfg config.Config) error {
 	name := project(r, cfg)
-	mine, _ := cfg.Mine()
-	road, dist := mine.Road, mine.Dist
-	if road == "" {
-		return fmt.Errorf(
-			"no road for %s; open a \"project %s\" block in "+
-				"~/.config/game/config with a road in it",
-			name,
-			name,
-		)
+	road, err := roadFor(r, cfg)
+	if err != nil {
+		return err
 	}
+	mine, _ := cfg.Mine()
+	dist := mine.Dist
 	if road == dist {
 		return fmt.Errorf(
 			"the road and dist for %s are the same "+
@@ -468,9 +494,232 @@ func pushRoad(r repo.Repo, cfg config.Config) error {
 	return err
 }
 
-// releasePrepare is game release TAG: every check, then a flat commit kept
-// for its push. the lint takes zero things to fix and zero to look at,
-// because a rule described is a rule meant; --i-mean-it is the exception.
+// roadFor returns this project's road, the dirty remote, or an error
+// saying why there isn't one: no block, a block with no road, or a road
+// that doesn't exist. every verb that uses the road calls this, so a
+// mistyped path gets a clear error from game before git tries to fetch.
+func roadFor(r repo.Repo, cfg config.Config) (string, error) {
+	name := project(r, cfg)
+	mine, held := cfg.Mine()
+	if !held {
+		return "", cfg.NoBlock()
+	}
+	if mine.Road == "" {
+		return "", fmt.Errorf(
+			"no road for %s; its block in %s has none",
+			name,
+			cfg.Dotfile,
+		)
+	}
+	if err := there(mine.Road, r.Dir, name, cfg.Dotfile); err != nil {
+		return "", err
+	}
+	return mine.Road, nil
+}
+
+// there checks that a remote given as a path on this machine exists. if
+// it doesn't, the error names the path, the project and the config file
+// it came from. a relative path is resolved from the repository, as git
+// does. urls are not checked here.
+func there(remote_, dir, name, dotfile string) error {
+	if remote(remote_) {
+		return nil
+	}
+	at := remote_
+	if !filepath.IsAbs(at) {
+		at = filepath.Join(dir, at)
+	}
+	if _, err := os.Stat(at); err == nil {
+		return nil
+	}
+	where := ""
+	if at != remote_ {
+		where = " (looked at " + at + ")"
+	}
+	return fmt.Errorf(
+		"the road for %s is not there: %s%s; it is named in %s "+
+			"under \"project %s\"",
+		name, remote_, where, dotfile, name,
+	)
+}
+
+// doStick is game stick. it claims this repository for your author name
+// by committing a file at the root, then pushes it, because the other
+// person's game can only see the claim once it's pushed.
+func doStick(r repo.Repo, cfg config.Config) error {
+	if cfg.Author == "" {
+		return fmt.Errorf(
+			"stick needs an author: \"author NAME\" in " +
+				"~/.config/game/config",
+		)
+	}
+	at, err := roadFor(r, cfg)
+	if err != nil {
+		return err
+	}
+	// the road's tip first, when the road has this branch: a claim
+	// committed behind it cannot be pushed, and neither could the
+	// game push the old message pointed at.
+	if err := catchUp(r, at); err != nil {
+		return err
+	}
+	if _, err := sticky.Stick(r, at, cfg.Author); err != nil {
+		return err
+	}
+	fmt.Println("stick: stuck")
+	if err := pushRoad(r, cfg); err != nil {
+		return fmt.Errorf(
+			"stuck here, but the claim did not reach the "+
+				"road: %v; game push sends it",
+			err,
+		)
+	}
+	return nil
+}
+
+// catchUp fast-forwards this branch to the road's tip when the road is
+// ahead, and says so. a detached head is left for Stick to refuse.
+func catchUp(r repo.Repo, road string) error {
+	branch, err := r.Branch()
+	if err != nil || branch == "HEAD" {
+		return err
+	}
+	n, err := sticky.Behind(r, road, branch)
+	if err != nil || n == 0 {
+		return err
+	}
+	tip, _, err := sticky.Sync(r, road, branch)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("stick: caught up to the road at %s first\n", tip[:7])
+	return nil
+}
+
+// doSticky is game sticky, the pairing verb. it fast-forwards this
+// branch to the road's tip now, and every build after does the same
+// while the claim holds.
+func doSticky(r repo.Repo, cfg config.Config) error {
+	at, err := roadFor(r, cfg)
+	if err != nil {
+		return err
+	}
+	branch, err := r.Branch()
+	if err != nil {
+		return err
+	}
+	tip, _, err := sticky.Sync(r, at, branch)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sticky: stuck to %s\n", tip[:7])
+	return nil
+}
+
+// doUnstick is game unstick. it releases the claim, commits and pushes,
+// so the other person sees the claim is gone, and a later release has no
+// trace of the session.
+func doUnstick(r repo.Repo, cfg config.Config) error {
+	// check the road first. releasing the claim is a commit, and if it
+	// can't be pushed, the other person still sees the claim.
+	at, err := roadFor(r, cfg)
+	if err != nil {
+		return err
+	}
+	// and take the other person's changes first, for the same reason.
+	branch, err := r.Branch()
+	if err != nil {
+		return err
+	}
+	if n, err := sticky.Behind(r, at, branch); err != nil {
+		return err
+	} else if n > 0 {
+		return mergeFirst()
+	}
+	tip, err := sticky.Unstick(r)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(
+		"unstick: no longer sticky %s; cleared for publish\n", tip[:7],
+	)
+	if err := pushRoad(r, cfg); err != nil {
+		return fmt.Errorf(
+			"unstuck here, but the road still carries the claim: "+
+				"%v; game push sends the release",
+			err,
+		)
+	}
+	return nil
+}
+
+// releaseDiff shows what a release would change on dist.
+func releaseDiff(r repo.Repo, cfg config.Config, tag string) error {
+	name := project(r, cfg)
+	mine, held := cfg.Mine()
+	dist := mine.Dist
+	if !held {
+		return cfg.NoBlock()
+	}
+	if dist == "" {
+		return fmt.Errorf(
+			"%s has no dist in its block in %s, so there is "+
+				"nothing to diff against",
+			name,
+			cfg.Dotfile,
+		)
+	}
+	d, err := release.Diff(
+		r,
+		release.Options{Name: name, Dist: dist, Tag: tag,
+			Never:   neverWords(),
+			Exclude: cfg.Exclude,
+			Allow:   cfg.SweepAllow,
+			Omit:    cfg.Omit,
+			Author:  cfg.Author,
+			License: cfg.License,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	what := name
+	if tag != "" {
+		what = name + " " + tag
+	}
+	if neverWords().Empty() {
+		fmt.Printf("release diff %s: this game was built "+
+			"without never-words, so the sweep below did not "+
+			"look for them, and a release would refuse\n", what)
+	}
+	if d.Same {
+		fmt.Printf(
+			"release diff %s: dist already has this tree, "+
+				"so a release would change nothing\n",
+			what,
+		)
+		return nil
+	}
+	from := "an empty dist"
+	if d.Parent != "" {
+		from = d.Parent[:7]
+	}
+	fmt.Printf("release diff %s: %s -> %s\n\n", what, from, d.Tree[:7])
+	// Repo.Git trims, so the stat arrives without git's leading space
+	// on the first line and without its trailing newline. Both are put
+	// back here rather than in Diff, so the value stays the plain text.
+	fmt.Printf(" %s\n", d.Stat)
+	// the sweep's hits are printed first, because any one of them
+	// stops the release.
+	for _, h := range d.Hits {
+		fmt.Printf("would be refused: %s in %s\n", h.Kind, h.File)
+	}
+	fmt.Println()
+	fmt.Print(d.Patch)
+	return nil
+}
+
+// releasePrepare is game release TAG.
 func releasePrepare(
 	r repo.Repo,
 	cfg config.Config,
@@ -480,16 +729,27 @@ func releasePrepare(
 	if err := stamped(); err != nil {
 		return err
 	}
+	if _, stuck, err := sticky.Stuck(r.Dir); err != nil {
+		return err
+	} else if stuck {
+		return fmt.Errorf(
+			"stuck: unstick first, so the flat tree this " +
+				"release makes carries no trace of the claim",
+		)
+	}
 	name := project(r, cfg)
 	mine, held := cfg.Mine()
 	dist := mine.Dist
-	if !held || dist == "" {
+	if !held {
+		return cfg.NoBlock()
+	}
+	if dist == "" {
 		return fmt.Errorf(
-			"%s has no project block with a dist in "+
-				"~/.config/game/config, so there is "+
+			"%s has no dist in its block in %s, so there is "+
 				"nowhere for a release to go: this tree "+
 				"builds locally and that is all",
 			name,
+			cfg.Dotfile,
 		)
 	}
 	if err := guard(r, dist); err != nil {
@@ -538,13 +798,12 @@ func releasePrepare(
 	res, err := release.Prepare(
 		r,
 		release.Options{Name: name, Dist: dist, Tag: tag,
-			Words: sweep.Words(
-				cfg.Words,
-			),
+			Never:   neverWords(),
 			Exclude: cfg.Exclude,
 			Allow:   cfg.SweepAllow,
 			Omit:    cfg.Omit,
 			Author:  cfg.Author,
+			License: cfg.License,
 			Values:  vals,
 		},
 	)
@@ -566,12 +825,8 @@ func releasePrepare(
 	return nil
 }
 
-// stamped refuses to cut or send a release from a binary that cannot say
+// stamped refuses to make or push a release from a binary that can't say
 // which commit it came from.
-//
-// a release is a claim about a tree, and a tool that cannot name itself
-// cannot be traced back to the tree that made it. bootstrap and game
-// build both stamp; only a hand-typed go build does not.
 func stamped() error {
 	if built != "" && build != "dev" {
 		return nil
@@ -584,8 +839,7 @@ func stamped() error {
 	)
 }
 
-// values is the builder's setting values, which a release refuses to
-// carry: they are the builder's, and the release is everybody's.
+// values returns the setting values from your config.
 func values(cfg config.Config) []string {
 	out := make([]string, 0, len(cfg.Set))
 	for _, v := range cfg.Set {
@@ -594,13 +848,9 @@ func values(cfg config.Config) []string {
 	return out
 }
 
-// releaseStack is game release stack TAG: every member of this
-// repository's stack laid under its own name in one flat commit, for
-// somebody who wants the whole stack rather than a part of it.
+// releaseStack is game release stack TAG.
 //
-// The members are taken from their dists by default, which is what a
-// stranger would get; --from road assembles what is on the roads, which
-// is how the assembly is tried before anything is published.
+// by default the members come from their dists.
 func releaseStack(
 	r repo.Repo,
 	cfg config.Config,
@@ -613,12 +863,15 @@ func releaseStack(
 	}
 	name := project(r, cfg)
 	mine, held := cfg.Mine()
-	if !held || mine.Dist == "" {
+	if !held {
+		return cfg.NoBlock()
+	}
+	if mine.Dist == "" {
 		return fmt.Errorf(
-			"%s has no project block with a dist in "+
-				"~/.config/game/config, so there is nowhere "+
-				"for a stack to go",
+			"%s has no dist in its block in %s, so there is "+
+				"nowhere for a stack to go",
 			name,
+			cfg.Dotfile,
 		)
 	}
 	if len(cfg.Stack) == 0 {
@@ -643,7 +896,7 @@ func releaseStack(
 		Name:    name,
 		Dist:    mine.Dist,
 		Tag:     tag,
-		Words:   sweep.Words(cfg.Words),
+		Never:   neverWords(),
 		Exclude: cfg.Exclude,
 		Allow:   cfg.SweepAllow,
 		Omit:    cfg.Omit,
@@ -685,9 +938,8 @@ func releaseStack(
 	return nil
 }
 
-// prefixed moves a member's file-scoped allowances to where that member
-// lands in the assembly, so a page a member exempted still names that
-// page once every member sits under its own name.
+// prefixed puts the member's directory in front of each of its lint allow
+// lines.
 func prefixed(name string, rules []config.Rule) []config.Rule {
 	out := make([]config.Rule, 0, len(rules))
 	for _, r := range rules {
@@ -701,11 +953,7 @@ func prefixed(name string, rules []config.Rule) []config.Rule {
 	return out
 }
 
-// stackLint holds the whole assembly to every member's rules: the
-// strictest of them, run over the assembled tree.
-//
-// A stack is published as one thing, so a rule one member lives by is a
-// rule the stack lives by. --i-mean-it says it out loud instead.
+// stackLint is the strictest lint.
 func stackLint(
 	r repo.Repo,
 	cfg config.Config,
@@ -769,8 +1017,7 @@ func stackLint(
 	)
 }
 
-// export writes a commit's tree into a directory, which is how the
-// assembly is read by anything that works on files rather than on git.
+// export writes a commit's tree into a directory.
 func export(r repo.Repo, commit, dir string) error {
 	archive := exec.Command("git", "-C", r.Dir, "archive", commit)
 	untar := exec.Command("tar", "-x", "-C", dir)
@@ -788,24 +1035,70 @@ func export(r repo.Repo, commit, dir string) error {
 	return untar.Wait()
 }
 
-// releasePush is game release push TAG: the prepared release to dist, the
-// one thing that ever reaches it.
+// stuckPush refuses release push on a claimed repository.
+func stuckPush(r repo.Repo, cfg config.Config) error {
+	mine, _ := cfg.Mine()
+	branch, err := r.Branch()
+	if err != nil {
+		return err
+	}
+	if mine.Road != "" {
+		road, err := roadFor(r, cfg)
+		if err != nil {
+			return err
+		}
+		n, err := sticky.Behind(r, road, branch)
+		if err != nil {
+			return fmt.Errorf(
+				"stuck, and the road could not be read: %v",
+				err,
+			)
+		}
+		if n > 0 {
+			return mergeFirst()
+		}
+	}
+	return fmt.Errorf(
+		"stuck: unstick first, then release again, so the flat " +
+			"commit carries no trace of the claim",
+	)
+}
+
+// mergeFirst is the error when the road is ahead of a claimed tree.
+func mergeFirst() error {
+	return fmt.Errorf(
+		"cannot un-stick, sticker has changes which require " +
+			"merge; pull or build first",
+	)
+}
+
+// releasePush is game release push TAG.
+//
+// it refuses while the repository is claimed.
 func releasePush(
 	r repo.Repo,
 	cfg config.Config,
 	tag string,
 	publish bool,
 ) error {
+	if _, stuck, err := sticky.Stuck(r.Dir); err != nil {
+		return err
+	} else if stuck {
+		return stuckPush(r, cfg)
+	}
 	name := project(r, cfg)
 	mine, held := cfg.Mine()
 	dist := mine.Dist
-	if !held || dist == "" {
+	if !held {
+		return cfg.NoBlock()
+	}
+	if dist == "" {
 		return fmt.Errorf(
-			"%s has no project block with a dist in "+
-				"~/.config/game/config, so there is "+
+			"%s has no dist in its block in %s, so there is "+
 				"nowhere for a release to go: this tree "+
 				"builds locally and that is all",
 			name,
+			cfg.Dotfile,
 		)
 	}
 	if err := guard(r, dist); err != nil {
@@ -845,9 +1138,9 @@ func releasePush(
 // hookMark is the line that says a pre-push hook is game's to rewrite.
 const hookMark = "# game: the guard on dist"
 
-// guard installs the pre-push hook that refuses any push to dist that did
-// not come from game release push. a hook someone else wrote is left
-// alone and said so, since a guard that clobbers is its own accident.
+// guard installs the pre-push hook that refuses any push to dist that
+// didn't come from game release push. if a pre-push hook is already there
+// and isn't game's, guard leaves it alone and says so.
 func guard(r repo.Repo, dist string) error {
 	if dist == "" {
 		return nil
@@ -887,8 +1180,8 @@ func guard(r repo.Repo, dist string) error {
 	return os.WriteFile(path, []byte(script), 0o755)
 }
 
-// check is the gate: gofmt has nothing to say, vet passes, the tests
-// pass, and the exit code is the tests', never a pipe's.
+// check passes when gofmt has nothing to say, vet passes and the tests
+// pass. its exit code is the tests' own, never a pipe's.
 func check(r repo.Repo) error {
 	if _, err := os.Stat(filepath.Join(r.Dir, "go.mod")); err != nil {
 		fmt.Println(
@@ -919,23 +1212,24 @@ func check(r repo.Repo) error {
 	return err
 }
 
-// paint shows the repository's own art, once, when something finished.
+// paint shows the repository's own art once.
 //
-// a build that worked is worth a second of pleasure, and the art belongs
-// to the repository: art/<project>.ansi, else art/header.ansi.
+// look at it. somebody drew this project a whole ansi, one cell at a
+// time, in escape codes, and put it in art/<project>.ansi (or
+// art/header.ansi). it rules. it absolutely rules.
 //
-// it goes only to a terminal, so a pipe, a log and a child game see
-// nothing, and NO_COLOR turns it off like anything else that paints.
+// so every single time a build works, it goes on the screen. fuck yeah
+// ansi. fuuuuuck yeah.
+//
+// it only prints to a terminal, so pipes, logs and child games see
+// nothing, and NO_COLOR turns it off.
 func paint(r repo.Repo, cfg config.Config) {
 	painted(r.Dir, project(r, cfg))
 }
 
-// painted shows one directory's art, named for the project or called
-// header.ansi, and says whether it found any.
-//
-// a build that worked is worth a second of pleasure. it goes only to a
-// terminal, so a pipe, a log and a child game see nothing, and NO_COLOR
-// turns it off like anything else that paints.
+// painted shows one directory's art, art/<project>.ansi or
+// art/header.ansi, and returns whether it found any. paint says when it
+// is shown.
 func painted(dir, name string) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -960,19 +1254,37 @@ func painted(dir, name string) bool {
 
 // buildBinaries builds every cmd/* into bin/, stamped so version can say
 // which commit and how old.
-func buildBinaries(r repo.Repo) error {
+//
+// the stamp is the commit and the commit's own time, never the clock,
+// and the tree's path is trimmed out, so the same sources build the
+// same bytes in any tree at any hour. a binary's hash then says which
+// sources made it.
+//
+// while the repository is claimed, it first fast-forwards this branch to
+// the road's tip, as game sticky does, and reports what moved, so you
+// only type the pairing verb once. every binary it builds after that is
+// marked sticky build, in its own colour.
+func buildBinaries(r repo.Repo, cfg config.Config) error {
 	entries, err := os.ReadDir(filepath.Join(r.Dir, "cmd"))
 	if err != nil {
 		return fmt.Errorf("no cmd/ directory to build")
+	}
+	_, stuck, err := sticky.Stuck(r.Dir)
+	if err != nil {
+		return err
+	}
+	if stuck {
+		if err := syncBuild(r, cfg); err != nil {
+			return err
+		}
 	}
 	commit, _ := r.Git("rev-parse", "--short", "HEAD")
 	if clean, _ := r.Clean(); !clean {
 		commit += "-dirty"
 	}
+	when, _ := r.Git("log", "-1", "--format=%cI")
 	stamp := fmt.Sprintf(
-		"-X main.build=%s -X main.built=%s",
-		commit,
-		time.Now().UTC().Format(time.RFC3339),
+		"-X main.build=%s -X main.built=%s", commit, when,
 	)
 	os.MkdirAll(filepath.Join(r.Dir, "bin"), 0o755)
 	for _, e := range entries {
@@ -980,19 +1292,66 @@ func buildBinaries(r repo.Repo) error {
 			continue
 		}
 		_, err := run(
-			r.Dir, "go", "build", "-ldflags", stamp,
+			r.Dir, "go", "build", "-trimpath", "-ldflags", stamp,
 			"-o", filepath.Join("bin", e.Name()),
 			"./cmd/"+e.Name(),
 		)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("build: bin/%s %s\n", e.Name(), commit)
+		verb := "build"
+		if stuck {
+			verb = "sticky build"
+		}
+		line := fmt.Sprintf("%s: bin/%s %s", verb, e.Name(), commit)
+		if stuck {
+			line = stickyColour(line)
+		}
+		fmt.Println(line)
 	}
 	return nil
 }
 
-// run is one command in a directory, output and go's own words on error.
+// syncBuild is the fast-forward a build does while the repository is
+// claimed. read dem docs pls: README.md, "human-agent pairing".
+func syncBuild(r repo.Repo, cfg config.Config) error {
+	mine, held := cfg.Mine()
+	if !held || mine.Road == "" {
+		return nil
+	}
+	road, err := roadFor(r, cfg)
+	if err != nil {
+		return err
+	}
+	branch, err := r.Branch()
+	if err != nil {
+		return err
+	}
+	tip, moved, err := sticky.Sync(r, road, branch)
+	if err != nil {
+		return err
+	}
+	if moved {
+		fmt.Printf("build: updates from %s merged\n", tip[:7])
+	}
+	return nil
+}
+
+// stickyColour marks a line in the colour a sticky build gets, the
+// same gate paint uses: only to a terminal, and never with NO_COLOR
+// set, so a pipe, a log and a child game see plain text.
+func stickyColour(line string) string {
+	if os.Getenv("NO_COLOR") != "" {
+		return line
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return line
+	}
+	return "\x1b[36m" + line + "\x1b[0m"
+}
+
+// run execs a command in a given directory and returns err if nonzero.
 func run(dir, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
@@ -1059,12 +1418,11 @@ func clean(r repo.Repo, cfg config.Config, cache bool) error {
 }
 
 // sweepBin removes the build output in one bin/ and counts the files it
-// took, asking git first.
+// removed. it asks git first.
 //
-// a member may keep real scripts in bin/ (flipr's deploy and gen,
-// kingfisher's whole set), and a clean that deletes those is a clean
-// that eats the source. the directory goes only if it was untracked
-// and is empty afterwards.
+// a member may keep real scripts in bin/, and clean must never delete
+// source. bin/ itself is removed only if it was untracked and is empty
+// afterwards.
 func sweepBin(r repo.Repo, bin string) (int, error) {
 	if _, err := os.Stat(bin); err != nil {
 		return 0, nil
@@ -1100,14 +1458,12 @@ func sweepBin(r repo.Repo, bin string) (int, error) {
 	return gone, nil
 }
 
-// cleanable is the directories go itself can be told to clean.
+// cleanable returns the directories go clean can work in.
 //
-// a stack checkout has no module at its root, only a go.work naming
-// the members that are modules, so "go clean ./..." there fails by
-// design: the root is not listed in the work file.
-//
-// the members are the unit instead, and a tree with no go in it at
-// all has nothing for go to do.
+// a stack checkout has no module at its root, only a go.work that names
+// the members. "go clean ./..." fails there, because the root isn't in
+// the work file, so game cleans each member instead. a tree with no go
+// in it has nothing for go to clean.
 func cleanable(r repo.Repo) []string {
 	if _, err := os.Stat(filepath.Join(r.Dir, "go.mod")); err == nil {
 		return []string{r.Dir}
@@ -1160,10 +1516,10 @@ func described(cfg config.Config) (lint.Lint, error) {
 	return lint.Describe(rules)
 }
 
-// buildTarget runs a described target's steps in order, in its
-// directory, under nice so prod and the person keep their share of the
-// machine, with everything it printed kept in bin/NAME.log and the last
-// lines shown. the first step that fails stops it, and says which.
+// buildTarget runs a target's steps from your config in order, in its
+// directory, under nice, so other work on the machine keeps its share.
+// everything it prints goes to bin/NAME.log, and the last lines are
+// shown. the first step that fails stops the build, and is named.
 func buildTarget(r repo.Repo, cfg config.Config, name string) error {
 	var t *config.Target
 	for i := range cfg.Targets {
@@ -1209,9 +1565,9 @@ func buildTarget(r repo.Repo, cfg config.Config, name string) error {
 		if !filepath.IsAbs(dir) {
 			dir = filepath.Join(r.Dir, dir)
 		}
-		// a program named by a relative path is meant against the
-		// step's directory, not the shell's; nice would look from
-		// its own.
+		// a program given as a relative path, like ./gen, is in the
+		// step's directory, not the shell's. nice would look for it
+		// from its own, so the path is joined to the step's directory.
 		prog := step.Args[0]
 		if strings.Contains(prog, "/") && !filepath.IsAbs(prog) {
 			prog = filepath.Join(dir, prog)
@@ -1257,12 +1613,7 @@ func tail(path string, n int) {
 	}
 }
 
-// runNamed runs a described run's steps in the foreground: your
-// terminal is its terminal, nothing is nice'd or logged, and tmux's
-// variables are dropped from the environment.
-//
-// a window opened from inside tmux is not inside it, and a program that
-// checks would be misled.
+// runNamed runs a named run in your terminal, without tmux's variables.
 func runNamed(r repo.Repo, cfg config.Config, name string) error {
 	var t *config.Target
 	for i := range cfg.Runs {
@@ -1314,10 +1665,12 @@ func runNamed(r repo.Repo, cfg config.Config, name string) error {
 	return nil
 }
 
-// verify is what a stack's child runs in a member's clone: check, the
-// test targets, the binaries and the lint, each told to the parent as an
-// event on stdout. the exit code says whether it passed; the lint count
-// is told and does not fail the build, since the table shows it.
+// verify is what a stack build's child game runs in a member's clone:
+// check, the test targets, the binaries and the lint. it reports each to
+// the parent as an event on stdout.
+//
+// the exit code says whether it passed. the lint count is reported but
+// doesn't fail the build, because the table at the end shows it.
 func verify(r repo.Repo, cfg config.Config) error {
 	enc := json.NewEncoder(os.Stdout)
 	tell := func(step, state, kind, text string, count int) {
@@ -1358,7 +1711,7 @@ func verify(r repo.Repo, cfg config.Config) error {
 	if st, e := os.Stat(filepath.Join(r.Dir, "cmd")); e == nil &&
 		st.IsDir() {
 		tell("build", "start", "", "", 0)
-		if err := buildBinaries(r); err != nil {
+		if err := buildBinaries(r, cfg); err != nil {
 			return failed("build", err)
 		}
 		tell("build", "ok", "", "", 0)
@@ -1375,10 +1728,7 @@ func verify(r repo.Repo, cfg config.Config) error {
 	return nil
 }
 
-// buildStack is game build stack: every member of the stack .game
-// describes, from the road or from dist, each built by a child game of
-// its own, and a table at the end. clean is built with nothing for the
-// lint to say.
+// buildStack builds every member of the stack in .game.
 func buildStack(r repo.Repo, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("build stack", flag.ExitOnError)
 	from := fs.String(
@@ -1424,12 +1774,13 @@ func buildStack(r repo.Repo, cfg config.Config, args []string) error {
 	where, work := *from, filepath.Join(r.Dir, "bin", "stack")
 	url := func(name string) (string, error) {
 		if u := remotes[name]; u != "" {
-			return u, nil
+			return u, there(u, r.Dir, name, cfg.Dotfile)
 		}
 		return "", fmt.Errorf(
-			"no %s for %s in ~/.config/game/config",
+			"no %s for %s in %s",
 			*from,
 			name,
+			cfg.Dotfile,
 		)
 	}
 	if *here {
@@ -1456,9 +1807,8 @@ func buildStack(r repo.Repo, cfg config.Config, args []string) error {
 			clean++
 		}
 	}
-	// each member's build was a child with a pipe for a terminal, so its
-	// own art went nowhere. the parent has the terminal, and shows the
-	// art of everything that built.
+	// art wasn't shown because each member was a child writing to a
+	// pipe. show it here.
 	for _, row := range rows {
 		if row.Result != "ok" {
 			continue
@@ -1475,12 +1825,7 @@ func buildStack(r repo.Repo, cfg config.Config, args []string) error {
 	return nil
 }
 
-// buildDocker is game build docker: an image of this repository, named
-// for the project and tagged with the commit, and nothing of the builder
-// in it.
-//
-// the settings the repository needs go beside it, in a ConfigMap under
-// bin/, for the cluster, since an image travels and a dotfile does not.
+// buildDocker builds an image of this repository.
 func buildDocker(r repo.Repo, cfg config.Config) error {
 	if _, err := os.Stat(filepath.Join(r.Dir, "Dockerfile")); err != nil {
 		return fmt.Errorf("no Dockerfile to build")
@@ -1524,12 +1869,7 @@ func buildDocker(r repo.Repo, cfg config.Config) error {
 	return nil
 }
 
-// remote says whether a dist lives somewhere other than this machine.
-//
-// a local bare repository is its own safety: being wrong writes to a
-// directory. a url is not, so pushing to one is the step that wants to be
-// typed on purpose rather than reached by running the next command in a
-// sequence.
+// remote tells you if the dist is on another machine.
 func remote(dist string) bool {
 	for _, p := range []string{
 		"http://", "https://", "ssh://", "git://",
@@ -1539,18 +1879,4 @@ func remote(dist string) bool {
 		}
 	}
 	return strings.Contains(dist, "@") && strings.Contains(dist, ":")
-}
-
-// gameHome is whose config this run reads: GAME_HOME when it is set, and
-// the shell's HOME otherwise.
-//
-// an agent has an anchor of its own and wants its own roads, dists and
-// settings; a person in a shell wants theirs. faking HOME would do it and
-// would take ssh keys, gh credentials and everything else along with it,
-// so the build tool asks for the one thing it needs instead.
-func gameHome() string {
-	if at := os.Getenv("GAME_HOME"); at != "" {
-		return at
-	}
-	return os.Getenv("HOME")
 }

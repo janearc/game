@@ -1,16 +1,9 @@
-// Stack assembles many projects into one release: a repository whose
-// whole content is every member at a ref, each under its own name, in a
-// single flat commit.
+// Stack assembles many projects into one release: a repository holding every
+// member at a ref, each under its own name, in a single flat commit.
 //
-// It is a distribution and not a place to work. Each member keeps its own
-// repository, its own tags and its own module path, and this is the copy
-// for somebody who wants the stack rather than a part of it: one clone,
-// everything in it, at one tag.
-//
-// A go.work is written beside the members so the whole stack builds from
-// that clone with no network, which is the only thing a reader cannot get
-// by fetching the members one at a time. It changes nothing about the
-// members themselves.
+// it is a distribution, not a place to work. each member keeps its own
+// repository, tags and module path. a go.work beside the members lets the
+// stack build from one clone with no network.
 package release
 
 import (
@@ -23,8 +16,8 @@ import (
 	"github.com/janearc/game/internal/sweep"
 )
 
-// Member is one project in a stack: its name, which is the directory it
-// lands in, the ref to take, and the remote to take it from.
+// Member is one project in a stack. Name is the directory it lands in, Ref is
+// what to take and URL is the remote to take it from.
 type Member struct {
 	Name string
 	Ref  string
@@ -38,22 +31,18 @@ type Stacked struct {
 	// Members are the names in the order they were laid out.
 	Members []string
 
-	// Work is the go.work that was written, or empty if no member is a
-	// go module.
+	// Work is the go.work that was written, or empty if no member is a go
+	// module.
 	Work string
 
-	// Games is each member's own .game, by member name, so the caller
-	// can hold the assembly to every member's rules.
+	// Games is each member's own .game by member name, so the caller can
+	// hold the assembly to every member's rules.
 	Games map[string]string
 }
 
-// Stack fetches every member into this repository, lays each one under
-// its own name beside this repository's own files, writes a go.work for
-// the modules among them, and keeps the commit at Ref(tag) for a push.
-//
-// A member that cannot be fetched, a sweep hit anywhere in the assembled
-// tree, or a setting's value in it stops the whole thing, and nothing is
-// kept: a stack is published whole or not at all.
+// Stack builds a stack from members. it fetches each member, lays them
+// beside this repo, writes a go.work, and keeps the commit at Ref(tag).
+// any error stops the whole thing: a stack is published whole or not at all.
 func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 	var out Stacked
 	if o.Tag == "" {
@@ -61,6 +50,9 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 			"a stack release needs a tag: " +
 				"game release stack v0.3.0",
 		)
+	}
+	if o.Never.Empty() {
+		return out, errNoNeverWords
 	}
 	if len(members) == 0 {
 		return out, fmt.Errorf(
@@ -76,9 +68,7 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 	index.Close()
 	os.Remove(index.Name())
 	env := []string{"GIT_INDEX_FILE=" + index.Name()}
-	// the stack repository's own tree goes in first, at the root: its
-	// readme, its bootstrap, the .game that lists these members. the
-	// members land beside them, each under its name.
+	// the stack's own tree is at the root. members go beside it.
 	own, err := r.Tree("HEAD")
 	if err != nil {
 		return out, err
@@ -93,8 +83,8 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 	wanted := map[string]map[string]bool{}
 	version := ""
 	exclude := append([]string(nil), o.Exclude...)
-	// allow gathers the sweep allowances: the stack's own, plus each
-	// member's, moved under the member's name.
+	// allow collects the sweep allowances per path, from each member's
+	// .game moved under its name.
 	var allow map[string][]string
 	for _, m := range members {
 		if m.URL == "" {
@@ -125,8 +115,7 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 		); err != nil {
 			return out, fmt.Errorf("%s: %v", m.Name, err)
 		}
-		// a member already said what its own sweep leaves alone, and
-		// that answer travels with it, under its name.
+		// a member's sweep skips paths it already marked.
 		if game, err := r.Show(tree, ".game"); err == nil {
 			for _, path := range excluded(game) {
 				exclude = append(exclude, m.Name+"/"+path)
@@ -142,9 +131,8 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 			}
 			out.Games[m.Name] = game
 		}
-		// every module in the member, not only one at its root: a
-		// client in a subdirectory is its own module, and a workspace
-		// that leaves it out sends the reader to the proxy for it.
+		// every module in the member is checked, not just the root. a
+		// subdirectory module needs to be found to avoid proxy use.
 		for _, at := range modules(r, tree) {
 			mod, err := r.Show(tree, at+"go.mod")
 			if err != nil {
@@ -196,7 +184,7 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 		allow[at] = append(allow[at], kinds...)
 	}
 	hits, err := sweep.Tree(
-		r, out.Commit, o.Words, o.Author, allow, exclude...)
+		r, out.Commit, o.Never, o.Author, allow, exclude...)
 	if err != nil {
 		return out, err
 	}
@@ -212,8 +200,8 @@ func Stack(r repo.Repo, o Options, members []Member) (Stacked, error) {
 	return out, err
 }
 
-// commit writes the assembled tree as one commit, parented on dist's
-// main so a clone of the stack only ever fast-forwards.
+// commit writes the assembled tree as one commit parented on dist's main. if
+// the tree is the same, it reuses dist's commit.
 func commit(r repo.Repo, o Options, out *Stacked) error {
 	current, err := r.RemoteMain(o.Dist)
 	if err != nil {
@@ -241,9 +229,9 @@ func commit(r repo.Repo, o Options, out *Stacked) error {
 	return nil
 }
 
-// Work is the go.work for the members that are modules, so the stack
-// builds from one clone without the network. The version is the highest
-// any member asks for, since a workspace must satisfy all of them.
+// Work is the go.work for the member directories. version is the highest go
+// version any member asks for, 1.25 when none does. each swap adds a replace
+// line.
 func Work(members []string, version string, swap []Swap) string {
 	var b strings.Builder
 	b.WriteString("// the stack, as one workspace: every member built\n")
@@ -281,17 +269,16 @@ func Work(members []string, version string, swap []Swap) string {
 	return b.String()
 }
 
-// A Swap is one replace line: a module in this workspace that some member
-// requires at a version, pointed at the directory it lives in here.
+// Swap is one replace line pointing a module at the directory it lives in
+// here, for one version a member requires.
 type Swap struct {
 	Path    string
 	Version string
 	Dir     string
 }
 
-// swaps is a replace for every version at which a member asks for a
-// module that is in this workspace. go refuses an unversioned replace of
-// a workspace module, so each version asked for gets its own line.
+// swaps makes a replace for each version any member asks for of a module that
+// is in the workspace, sorted by path and version.
 func swaps(lives map[string]string, wanted map[string]map[string]bool) []Swap {
 	var out []Swap
 	for path, dir := range lives {
@@ -312,8 +299,7 @@ func swaps(lives map[string]string, wanted map[string]map[string]bool) []Swap {
 	return out
 }
 
-// modulePath is the path a go.mod declares, which is not always the
-// directory it sits in: a client in a subdirectory declares its own.
+// modulePath returns the path from a go.mod file.
 func modulePath(mod string) string {
 	for _, line := range strings.Split(mod, "\n") {
 		line = strings.TrimSpace(line)
@@ -325,9 +311,7 @@ func modulePath(mod string) string {
 	return ""
 }
 
-// required is what a go.mod asks for, by path and version, from both the
-// one-line form and the block form. indirect requirements count: they
-// reach the build list the same way.
+// required reads go.mod's direct and indirect dependencies.
 func required(mod string) map[string]string {
 	out := map[string]string{}
 	block := false
@@ -357,8 +341,8 @@ func required(mod string) map[string]string {
 	return out
 }
 
-// modules is every directory in a tree that holds a go.mod, as a prefix
-// ending in a slash, with the root written as the empty string.
+// modules lists the directories in a tree that hold a go.mod, as prefixes
+// ending in a slash. the root is the empty string.
 func modules(r repo.Repo, tree string) []string {
 	out, err := r.Git("ls-tree", "-r", "--name-only", tree)
 	if err != nil {
@@ -375,13 +359,8 @@ func modules(r repo.Repo, tree string) []string {
 	return at
 }
 
-// allowedIn is the sweep allowances a member's own .game declares, with
-// each path moved under the member's name, because in an assembled stack
-// a member's own pages sit one directory down.
-//
-// a member's declaration travels with the member. copying it into the
-// stack's own .game would put the same decision in two files and let them
-// drift, and the stack has no standing to decide what a member carries.
+// allowedIn reads a member's own .game and moves each path under the
+// member's name, so the allowances travel with the member.
 func allowedIn(member, game string) map[string][]string {
 	out := map[string][]string{}
 	for _, line := range strings.Split(game, "\n") {
@@ -399,9 +378,7 @@ func allowedIn(member, game string) map[string][]string {
 	return out
 }
 
-// excluded is the paths a member's own .game leaves out of its sweep,
-// read straight from the file rather than from a config, since only these
-// lines matter here.
+// excluded reads paths from a .game file to skip in sweep.
 func excluded(game string) []string {
 	var out []string
 	for _, line := range strings.Split(game, "\n") {
@@ -418,8 +395,7 @@ func excluded(game string) []string {
 	return out
 }
 
-// directive is a module's go version, the plain "go 1.25" line, or empty
-// when it has none.
+// directive returns a module's go version line or empty.
 func directive(mod string) string {
 	for _, line := range strings.Split(mod, "\n") {
 		if strings.HasPrefix(line, "go ") {

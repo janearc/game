@@ -16,9 +16,17 @@ commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 	commit="$commit-dirty"
 fi
-built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# the commit's own time, not the clock's: the same sources build the
+# same bytes, here as in game build.
+built=$(git log -1 --format=%cI 2>/dev/null || echo "")
+# the never-words go in first: cmd/never bakes the list game's config
+# names into internal/sweep/never/hashes, as salted hashes, and go embeds
+# that file in the build. with no list it says so, and the game built
+# here does everything but release.
+echo "0: go run ./cmd/never"
+go run ./cmd/never
 echo "0: go build ./cmd/game ($commit)"
-go build -ldflags "-X main.build=$commit -X main.built=$built" \
+go build -trimpath -ldflags "-X main.build=$commit -X main.built=$built" \
 	-o bin/game ./cmd/game
 echo "1: bin/game check"
 bin/game check

@@ -1,19 +1,14 @@
-// Package config is game's settings: one per line, "key value" or
-// "key = value", # comments, ~ for home. A project's own settings are a
-// block, opened by "project NAME" and held by the indent under it.
+// Package config reads game's settings.
 //
-// Two files, the dotfile in the home directory and .game in the
-// repository, folded in that order so the repository's wins, with two
-// exceptions.
+// there are two files: the dotfile in your home directory, then .game in the
+// repository, which is read second and wins.
 //
-// The sweep's word list is the dotfile's alone, so a repository cannot
-// shorten what it may not say. A repository's lint lines replace the
-// dotfile's rather than add to them, so a repository that describes any
-// lint describes all of it.
+// each line is "key value" or "key = value". # starts a comment and ~ is
+// home. a "project NAME" line opens a block of indented lines.
 //
-// An unknown key is an error that names the file and line, because a
-// misspelt key that is silently ignored is a setting that silently does
-// nothing.
+// the sweep's word list comes from the dotfile only. lint lines in the
+// repository replace the dotfile's. an unknown key is an error naming the
+// file and line.
 package config
 
 import (
@@ -21,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,17 +26,26 @@ type Config struct {
 	// the name the bounce refuses in the third person
 	Author   string
 	Words    string             // the sweep's word list, one per line
-	Name     string             // the project, from .game; names its block
-	Projects map[string]Project // the builder's, one block per project
-	Exclude  []string           // path prefixes the sweep leaves alone
-	// Omit is files that belong on the road and in no release. the
-	// sweep's exclude only scopes what is scanned; a file nobody scans
-	// still ships, so keeping it out is a separate word.
+	Name     string             // the project, from .game's name line
+	Projects map[string]Project // yours, one block per project
+	// Named is the project's name as game uses it. Load sets it, and
+	// NamedBy says where it came from, in words a message can carry.
+	Named   string
+	NamedBy string
+	// Dotfile is the path of the config that was read, so a message can
+	// name it.
+	Dotfile string
+	Exclude []string // path prefixes the sweep leaves alone
+	// Omit is files that stay on the road and are left out of every
+	// release. exclude only limits what the sweep scans.
 	Omit []string
 	// SweepAllow is, per file, the kinds of sweep hit the repository
-	// means to carry: a forensics tool's marks are its product. per
-	// file and per kind, so a real leak in the same file is still found.
+	// means to carry. a real leak of another kind in the same file is
+	// still found.
 	SweepAllow map[string][]string
+	// License is a path to the one license every release carries. it
+	// lives in your config, not in a repository.
+	License string
 	// the lint, as described; none described is no lint
 	Lint    []Rule
 	Targets []Target // builds described beyond go's own, by name
@@ -49,12 +54,12 @@ type Config struct {
 	// settings the repository needs, declared in .game
 	Needs []Need
 	Stack [][2]string // a stack's members, name and ref, in order
-	// the builder's values, from the dotfile only
+	// your values, from the dotfile only
 	Set map[string]string
 }
 
-// Project is one project's part of the builder's dotfile: its two
-// remotes and the values it is given.
+// Project is one project's block in your dotfile: its two remotes and the
+// values it is given.
 //
 // The project is the unit because one machine builds several, and a key
 // that has to name its project on every line is a key that will
@@ -79,12 +84,11 @@ type Project struct {
 	Set map[string]string
 }
 
-// Need is a setting a repository declares it needs, and why, so a
-// builder without it is told what to set rather than handed a program
-// that fails later. The value is never in the repository: it is the
-// builder's, in their own dotfile, and a release carries only this.
+// Need is a setting a repository declares it needs, and why. if you
+// haven't set it, game tells you what to set before anything runs. the
+// value lives in your dotfile, never in the repository.
 //
-//	needs KINGFISHER_CONTACT a name and email the data providers can reach
+//	needs CONTACT a name and email the data providers can reach
 type Need struct {
 	Name string
 	Why  string
@@ -127,21 +131,14 @@ type Rule struct {
 	Args []string
 }
 
-// numeric is the lint rules whose argument is a number, where the
-// strictest of two is the smaller: a narrower column, a shorter readme, a
-// shorter paragraph.
+// numeric is the lint rules that take a number. for these the smaller number
+// is the stricter.
 var numeric = map[string]bool{"width": true, "rows": true, "paragraph": true}
 
-// Strictest folds several descriptions of lint into the one that refuses
-// the most.
-//
-// A stack is published as one thing, so it holds every member to every
-// member's rule: a number is the smallest any of them asked for, a rule
-// with no argument is on if any of them has it, and a word list is the
-// union, because a word one member will not say is not said here.
-//
-// An allowance is per file, so it cannot collide: every one of them is
-// kept, and two for the same file are merged.
+// Strictest combines every member's lint rules into the strictest set. a
+// number is the smallest any member asks for, word lists are merged, and a
+// rule without arguments is on if any member has it. allowances are kept
+// per file and merged.
 func Strictest(sets ...[]Rule) []Rule {
 	var order []string
 	held := map[string]Rule{}
@@ -188,9 +185,8 @@ func Strictest(sets ...[]Rule) []Rule {
 	return out
 }
 
-// less is whether one numeric rule's argument is smaller than another's.
-// A rule with no number, or one that is not a number, never wins: a rule
-// that cannot be compared cannot be the stricter of the two.
+// less checks if one rule's number is smaller than another's.
+// a rule with no number cannot be stricter.
 func less(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false
@@ -207,10 +203,7 @@ func less(a, b []string) bool {
 }
 
 // allowance is one "lint allow FILE name..." line.
-//
-// an exemption names a file and a rule, never a rule alone: a page that
-// has to run long says so in a line a reader can grep, and every other
-// page stays held to it.
+// an exemption names a file and a rule. a rule alone is not allowed.
 func allowance(path string, n int, f []string) (Rule, error) {
 	if len(f) < 3 {
 		return Rule{}, fmt.Errorf(
@@ -253,13 +246,12 @@ func union(a, b []string) []string {
 	return out
 }
 
-// Keys is what a file may say, and what an unknown key is measured
-// against.
 // SweepKinds are the kinds of sweep hit a .game may declare it carries.
 var SweepKinds = []string{
 	"paths", "sessions", "uuids", "emails", "author", "word",
 }
 
+// Keys is what a file may say. an unknown key is an error.
 var Keys = []string{
 	"author",
 	"words",
@@ -296,20 +288,15 @@ func Defaults(home, repo string) Config {
 	}
 }
 
-// Load is the defaults, then the dotfile, then the repository's .game.
-// A missing file is skipped; a malformed one is an error.
+// Load reads the defaults, then the dotfile under whose, then the
+// repository's .game. a missing file is skipped and a malformed one is an
+// error.
 //
-// A repository that describes any lint describes all of it: its lint
-// lines replace the dotfile's, so a repository can say exactly which
-// rules it holds to today, and the dotfile is what a repository that
-// says nothing gets.
+// ~ expands against home, which is not always whose: an agent's config is in
+// its anchor, and ~ in it is still this machine's user.
 //
-// It reads the config at whose and expands ~ against home. They are one
-// directory for a person in a shell.
-//
-// For an agent they are not: the config is the agent's, in its anchor,
-// and a ~ in it still means this machine's user, since the roads it
-// names belong to the estate rather than to the agent.
+// lint lines in the repository replace the dotfile's. the dotfile's lint is
+// used when the repository has none.
 func Load(whose, home, repo string) (Config, error) {
 	c := Defaults(home, repo)
 	dotfile := filepath.Join(whose, ".config", "game", "config")
@@ -326,7 +313,9 @@ func Load(whose, home, repo string) (Config, error) {
 	if len(c.Lint) == 0 {
 		c.Lint = mine
 	}
-	for name, value := range c.Projects[c.Name].Set {
+	c.Dotfile = dotfile
+	c.Named, c.NamedBy = named(c.Name, repo)
+	for name, value := range c.Projects[c.Named].Set {
 		if c.Set == nil {
 			c.Set = map[string]string{}
 		}
@@ -335,20 +324,79 @@ func Load(whose, home, repo string) (Config, error) {
 	return c, nil
 }
 
-// Mine is the block for the project the repository says it is, and
-// whether there is one.
-//
-// A tree whose project the dotfile does not describe is a local build by
-// definition: there is nowhere for a release to go, and game says so
-// rather than inventing a remote. That is also the cheapest way to test
-// game on somebody else's repository.
+// Mine is the block for the project the repository says it is, and whether
+// there is one. a project with no block is a local build.
 func (c Config) Mine() (Project, bool) {
-	p, held := c.Projects[c.Name]
+	p, held := c.Projects[c.Named]
 	return p, held
 }
 
-// Remotes is every project's clean remote, or every project's dirty one,
-// which is what a stack needs to clone its members from.
+// named returns the tree's name and where it came from. the name line in
+// .game wins, then the last element of go.mod's module path, then the
+// directory name.
+func named(fromGame, repo string) (name, by string) {
+	if fromGame != "" {
+		return fromGame, "the name line in .game"
+	}
+	if mod := module(repo); mod != "" {
+		return last(mod), "go.mod's module " + mod
+	}
+	return filepath.Base(repo), "the directory's name"
+}
+
+// module is the path a tree's go.mod declares, or empty without one.
+func module(repo string) string {
+	b, err := os.ReadFile(filepath.Join(repo, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimSpace(
+				strings.TrimPrefix(line, "module "),
+			)
+		}
+	}
+	return ""
+}
+
+// last is the project name from a module path. a major version suffix
+// is go's, not the project's: example/v2 is example.
+func last(mod string) string {
+	parts := strings.Split(strings.Trim(mod, "/"), "/")
+	name := parts[len(parts)-1]
+	if len(parts) > 1 && len(name) > 1 && name[0] == 'v' {
+		if _, err := strconv.Atoi(name[1:]); err == nil {
+			name = parts[len(parts)-2]
+		}
+	}
+	return name
+}
+
+// NoBlock is the refusal when a tree has no block. it shows the name
+// looked for, where it came from, which file was read, and the blocks
+// that file does have.
+func (c Config) NoBlock() error {
+	blocks := make([]string, 0, len(c.Projects))
+	for name := range c.Projects {
+		blocks = append(blocks, name)
+	}
+	sort.Strings(blocks)
+	has := "it has no project blocks at all"
+	if len(blocks) > 0 {
+		has = "its project blocks are " + strings.Join(blocks, ", ")
+	}
+	return fmt.Errorf(
+		"no project block for %s in %s; the name is from %s, and %s. "+
+			"open a \"project %s\" block there to give it a road "+
+			"and a dist",
+		c.Named, c.Dotfile, c.NamedBy, has, c.Named,
+	)
+}
+
+// Remotes maps each project's name to its dist when clean is true, and to its
+// road otherwise. projects with none are left out.
 func (c Config) Remotes(clean bool) map[string]string {
 	out := map[string]string{}
 	for name, p := range c.Projects {
@@ -362,9 +410,8 @@ func (c Config) Remotes(clean bool) map[string]string {
 	return out
 }
 
-// fold reads one file into the config. words is whether this file is
-// the builder's dotfile: only it may set the word list and give values,
-// and only a repository may declare what it needs.
+// fold reads a file into the config. words means this is your dotfile,
+// which sets the word list and values. only a repository declares needs.
 func (c *Config) fold(path, home string, words bool) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -392,8 +439,8 @@ func (c *Config) Parse(
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// a project's lines are the indented ones under it, so the
-		// first line back at the margin closes the block.
+		// a project's lines are indented. the first unindented line
+		// ends the project block.
 		if raw[0] != '\t' && raw[0] != ' ' {
 			open = ""
 		}
@@ -417,6 +464,8 @@ func (c *Config) Parse(
 		switch key {
 		case "author":
 			c.Author = val
+		case "license":
+			c.License = val
 		case "words":
 			if words {
 				c.Words = val
@@ -724,9 +773,8 @@ func (c *Config) Parse(
 	return sc.Err()
 }
 
-// split is "key value" or "key = value", the key lowercased, the value
-// trimmed and unquoted if it was quoted; a line with no value is an
-// error, since every key takes one.
+// split splits "key value" or "key = value". the key is lowercased and the
+// value is unquoted. a line with no value is an error.
 func split(line string) (string, string, error) {
 	var key, val string
 	if i := strings.IndexAny(line, " \t="); i >= 0 {
@@ -759,8 +807,7 @@ func expand(val, home string) string {
 	return val
 }
 
-// Missing is every need the builder has not set, each with its reason,
-// so a build can refuse with what to do rather than start and fail.
+// Missing lists every need not set, with reason. build can refuse early.
 func (c Config) Missing() []Need {
 	var out []Need
 	for _, n := range c.Needs {
@@ -771,9 +818,7 @@ func (c Config) Missing() []Need {
 	return out
 }
 
-// Env is the needed settings as NAME=value, for a build or a run: only
-// what the repository declared, so a builder's other values never reach
-// a program that did not ask for them.
+// Env is the declared settings as NAME=value. only what the repo declared.
 func (c Config) Env() []string {
 	var out []string
 	for _, n := range c.Needs {
@@ -782,4 +827,12 @@ func (c Config) Env() []string {
 		}
 	}
 	return out
+}
+
+// Whose returns GAME_HOME if set, else the shell's HOME.
+func Whose() string {
+	if at := os.Getenv("GAME_HOME"); at != "" {
+		return at
+	}
+	return os.Getenv("HOME")
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/janearc/game/internal/repo"
+	"github.com/janearc/game/internal/sweep"
 )
 
 // a private repository with two commits, a bare public root with none.
@@ -74,7 +75,7 @@ func count(t *testing.T, r repo.Repo, rev string) int {
 // dist, and the message is the name and the tag and nothing else.
 func TestPrepareThenPush(t *testing.T) {
 	r, dist := fixture(t)
-	o := Options{Name: "x", Dist: dist, Tag: "v0.3.0"}
+	o := Options{Never: sworn, Name: "x", Dist: dist, Tag: "v0.3.0"}
 	res, err := Prepare(r, o)
 	if err != nil || res.Skipped || res.Commit == "" {
 		t.Fatalf("prepare: %+v %v", res, err)
@@ -125,17 +126,17 @@ func TestPrepareThenPush(t *testing.T) {
 // main moved underneath the prepared release.
 func TestPushRefuses(t *testing.T) {
 	r, dist := fixture(t)
-	if _, err := Push(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err == nil {
+	if _, err := Push(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1"}); err == nil {
 		t.Fatal("pushed a release that was never prepared")
 	}
-	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err != nil {
+	if _, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1"}); err != nil {
 		t.Fatal(err)
 	}
 	other, _ := r.GitIn("elsewhere\n", "commit-tree", "HEAD^{tree}")
 	if _, err := r.Git("push", dist, other+":refs/heads/main"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Push(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err == nil {
+	if _, err := Push(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1"}); err == nil {
 		t.Error("pushed over a dist main that moved")
 	}
 }
@@ -144,11 +145,11 @@ func TestPushRefuses(t *testing.T) {
 // refuse before anything is kept; an excluded prefix is left alone.
 func TestPrepareRefuses(t *testing.T) {
 	r, dist := fixture(t)
-	if _, err := Prepare(r, Options{Name: "x", Dist: dist}); err == nil {
+	if _, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist}); err == nil {
 		t.Error("prepared without a tag")
 	}
 	os.WriteFile(filepath.Join(r.Dir, "dirty.txt"), []byte("x"), 0o644)
-	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1"}); err == nil {
+	if _, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1"}); err == nil {
 		t.Fatal("a dirty tree prepared")
 	}
 	os.Remove(filepath.Join(r.Dir, "dirty.txt"))
@@ -159,14 +160,14 @@ func TestPrepareRefuses(t *testing.T) {
 	)
 	r.Git("add", "notes.md")
 	r.GitIn("", "commit", "-q", "-m", "a path")
-	res, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1"})
+	res, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1"})
 	if err == nil || len(res.Hits) == 0 {
 		t.Fatalf("a machine path was not found: %+v %v", res, err)
 	}
 	if _, err := r.Git("rev-parse", "--verify", "-q", Ref("v1")); err == nil {
 		t.Error("a refused release was kept")
 	}
-	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1", Exclude: []string{"notes.md"}}); err != nil {
+	if _, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1", Exclude: []string{"notes.md"}}); err != nil {
 		t.Fatalf("an excluded file still refused: %v", err)
 	}
 	os.WriteFile(
@@ -179,6 +180,7 @@ func TestPrepareRefuses(t *testing.T) {
 	res, err = Prepare(
 		r,
 		Options{
+			Never:   sworn,
 			Name:    "x",
 			Dist:    dist,
 			Tag:     "v2",
@@ -211,7 +213,7 @@ func TestAuthor(t *testing.T) {
 	)
 	r.Git("add", "LICENSE.txt", "go.md")
 	r.GitIn("", "commit", "-q", "-m", "licence")
-	if _, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v1", Author: "Ada"}); err != nil {
+	if _, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v1", Author: "Ada"}); err != nil {
 		t.Fatalf("the licence or the handle refused a release: %v", err)
 	}
 	os.WriteFile(
@@ -221,8 +223,176 @@ func TestAuthor(t *testing.T) {
 	)
 	r.Git("add", "README.md")
 	r.GitIn("", "commit", "-q", "-m", "readme")
-	if res, err := Prepare(r, Options{Name: "x", Dist: dist, Tag: "v2", Author: "Ada"}); err == nil ||
+	if res, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v2", Author: "Ada"}); err == nil ||
 		len(res.Hits) == 0 {
 		t.Fatalf("the author in the readme released: %+v %v", res, err)
+	}
+}
+
+// a release carries the builder's one licence: the file named in their
+// dotfile lands in the released tree as LICENSE.txt, replacing whatever the
+// repository kept, and the road's working copy is not touched by it.
+func TestPrepareCarriesTheLicense(t *testing.T) {
+	r, dist := fixture(t)
+	lic := filepath.Join(t.TempDir(), "the-licence")
+	os.WriteFile(lic, []byte("the terms, as of today\n"), 0o644)
+	o := Options{Never: sworn, Name: "x", Dist: dist, Tag: "v0.3.0", License: lic}
+	res, err := Prepare(r, o)
+	if err != nil || res.Commit == "" {
+		t.Fatalf("prepare: %+v %v", res, err)
+	}
+	got, err := r.Git("show", res.Commit+":LICENSE.txt")
+	if err != nil || strings.TrimSpace(got) != "the terms, as of today" {
+		t.Errorf("the released tree's licence is %q (%v)", got, err)
+	}
+	if other, _ := r.Git("show", res.Commit+":a.txt"); !strings.Contains(
+		other, "hello",
+	) {
+		t.Errorf("the rest of the tree did not come along: %q", other)
+	}
+	if _, err := os.Stat(filepath.Join(r.Dir, "LICENSE.txt")); err == nil {
+		t.Error("the licence was written into the road's working copy")
+	}
+	if clean, _ := r.Clean(); !clean {
+		t.Error("preparing a release left the road dirty")
+	}
+}
+
+// a licence that cannot be read, or has nothing in it, stops the release
+// and says which file: shipping with no terms is what this is here to end.
+func TestPrepareRefusesAMissingOrEmptyLicense(t *testing.T) {
+	r, dist := fixture(t)
+	empty := filepath.Join(t.TempDir(), "empty")
+	os.WriteFile(empty, nil, 0o644)
+	for _, path := range []string{empty, empty + "-not-there"} {
+		o := Options{Never: sworn, Name: "x", Dist: dist, Tag: "v0.3.0", License: path}
+		_, err := Prepare(r, o)
+		if err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s: got %v", path, err)
+		}
+	}
+}
+
+// a diff is the two ends of the release that has not happened yet: what
+// dist holds now against the flat tree this branch would send. after a
+// push with nothing changed it says so rather than showing an empty
+// patch, and it names the file that changed rather than the commit.
+func TestDiffShowsWhatAPushWouldSend(t *testing.T) {
+	r, dist := fixture(t)
+	o := Options{Never: sworn, Name: "x", Dist: dist, Tag: "v0.3.0"}
+
+	// nothing on dist yet: the whole tree is the change.
+	d, err := Diff(r, o)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if d.Same || d.Parent != "" {
+		t.Fatalf("empty dist: %+v", d)
+	}
+	if !strings.Contains(d.Patch, "hello") ||
+		!strings.Contains(d.Stat, "a.txt") {
+		t.Errorf("first diff missed the tree: %q", d.Stat)
+	}
+
+	if _, err := Prepare(r, o); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if _, err := Push(r, o); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// pushed and unchanged: a release would be a no-op, and saying so
+	// is not the same as showing an empty patch.
+	d, err = Diff(r, o)
+	if err != nil {
+		t.Fatalf("diff after push: %v", err)
+	}
+	if !d.Same {
+		t.Errorf("after a push with no change, Same is false: %+v", d)
+	}
+
+	// one file changed: the diff names it, and the parent is dist.
+	if err := os.WriteFile(
+		filepath.Join(r.Dir, "c.txt"), []byte("third\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		if _, err := r.Git(args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	git("add", "c.txt")
+	git("commit", "-q", "-m", "three")
+	d, err = Diff(r, Options{Never: sworn, Name: "x", Dist: dist, Tag: "v0.3.1"})
+	if err != nil {
+		t.Fatalf("diff after a change: %v", err)
+	}
+	if d.Same {
+		t.Fatal("a changed tree reported as the same")
+	}
+	if !strings.Contains(d.Stat, "c.txt") ||
+		!strings.Contains(d.Patch, "third") {
+		t.Errorf("the changed file is not in the diff: %q", d.Stat)
+	}
+	if main, _ := r.RemoteMain(dist); d.Parent != main {
+		t.Errorf("parent is %q, dist's main is %q", d.Parent, main)
+	}
+	// and a diff publishes nothing.
+	if ref, _ := r.Git(
+		"rev-parse", "--verify", "-q", Ref("v0.3.1"),
+	); ref != "" {
+		t.Error("diff prepared a release")
+	}
+}
+
+// sworn is a made-up never-word for these releases to sweep with: a game
+// built without any refuses to release, which most of these tests are
+// not about.
+var sworn = func() sweep.Never {
+	body, err := sweep.Bake("a-salt", []string{"zorblax"})
+	if err != nil {
+		panic(err)
+	}
+	return sweep.ParseNever(body)
+}()
+
+// a game built without never-words refuses a release and a stack before
+// it touches anything: it cannot sweep for names it was never given.
+func TestNoNeverWordsNoRelease(t *testing.T) {
+	if _, err := Prepare(repo.Repo{}, Options{Tag: "v1"}); err != errNoNeverWords {
+		t.Errorf("a release without never-words was not refused: %v", err)
+	}
+	if _, err := Stack(repo.Repo{}, Options{Tag: "v1"},
+		[]Member{{Name: "m", Ref: "v1"}}); err != errNoNeverWords {
+		t.Errorf("a stack without never-words was not refused: %v", err)
+	}
+}
+
+// a never-word in the tree refuses the release, broken across a line or
+// not, and the hit says a never-word was there without saying which.
+func TestANeverWordInTheTreeRefuses(t *testing.T) {
+	r, dist := fixture(t)
+	os.WriteFile(filepath.Join(r.Dir, "thanks.md"),
+		[]byte("with thanks to\nZorblax, as ever\n"), 0o644)
+	r.Git("add", "thanks.md")
+	r.GitIn("", "commit", "-q", "-m", "thanks")
+	res, err := Prepare(r, Options{Never: sworn, Name: "x", Dist: dist,
+		Tag: "v1"})
+	if err == nil {
+		t.Fatal("a tree with a never-word in it was prepared")
+	}
+	found := false
+	for _, hit := range res.Hits {
+		if hit.Kind == sweep.NeverWord && hit.File == "thanks.md" {
+			found = true
+		}
+		if strings.Contains(strings.ToLower(hit.Kind), "zorblax") {
+			t.Errorf("a hit names the word: %q", hit.Kind)
+		}
+	}
+	if !found {
+		t.Errorf("no never-word hit in thanks.md: %+v", res.Hits)
 	}
 }

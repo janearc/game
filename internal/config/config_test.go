@@ -346,3 +346,103 @@ func TestLoadReadsOneHomeAndExpandsAnother(t *testing.T) {
 		t.Errorf("road %q, want %q", got, want)
 	}
 }
+
+// TestNameComesFromOnePlace: the name a tree is looked up by in the
+// builder's config is the one its messages use, and it is found in this
+// order: .game's name line, go.mod's module, the directory. a tree with
+// no .game must still find its block, a folder called something else
+// must not change the answer, and a config with no block must say
+// exactly what was tried.
+func TestNameComesFromOnePlace(t *testing.T) {
+	home := t.TempDir()
+	dotfile := filepath.Join(home, ".config", "game", "config")
+	os.MkdirAll(filepath.Dir(dotfile), 0o755)
+	os.WriteFile(
+		dotfile,
+		[]byte("project miami\n\troad ../miami-road.git\n"+
+			"project kingfisher\n\troad ../k-road.git\n"),
+		0o644,
+	)
+	tree := func(dir, mod, game string) string {
+		t.Helper()
+		at := filepath.Join(t.TempDir(), dir)
+		os.MkdirAll(at, 0o755)
+		if mod != "" {
+			os.WriteFile(
+				filepath.Join(at, "go.mod"),
+				[]byte("module "+mod+"\n\ngo 1.25\n"),
+				0o644,
+			)
+		}
+		if game != "" {
+			os.WriteFile(
+				filepath.Join(at, ".game"), []byte(game), 0o644,
+			)
+		}
+		return at
+	}
+
+	// no .game at all: the module names it, and the block is found.
+	c, err := Load(home, home, tree("miami", "github.com/x/miami", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := c.Mine(); !held || c.Named != "miami" ||
+		!strings.Contains(c.NamedBy, "go.mod") {
+		t.Fatalf("no .game: named %q by %q, held %v",
+			c.Named, c.NamedBy, held)
+	}
+
+	// a folder called something else: the module still wins.
+	c, _ = Load(home, home, tree("miami-dist", "github.com/x/miami", ""))
+	if _, held := c.Mine(); !held || c.Named != "miami" {
+		t.Fatalf("folder differs: named %q, held %v", c.Named, held)
+	}
+
+	// a module with a major version suffix is still its own name.
+	c, _ = Load(home, home, tree("k", "github.com/x/kingfisher/v2", ""))
+	if _, held := c.Mine(); !held || c.Named != "kingfisher" {
+		t.Fatalf("v2 suffix: named %q, held %v", c.Named, held)
+	}
+
+	// a .game with a name line still wins, since support stays for now.
+	c, _ = Load(home, home, tree("x", "github.com/x/other", "name miami\n"))
+	if _, held := c.Mine(); !held || c.Named != "miami" ||
+		!strings.Contains(c.NamedBy, ".game") {
+		t.Fatalf(".game name: named %q by %q, held %v",
+			c.Named, c.NamedBy, held)
+	}
+
+	// nothing to go on but the folder: it is named, and said to be.
+	c, _ = Load(home, home, tree("plain", "", ""))
+	if c.Named != "plain" || !strings.Contains(c.NamedBy, "directory") {
+		t.Fatalf("bare folder: named %q by %q", c.Named, c.NamedBy)
+	}
+
+	// a config with no block for it: the error says the name, where it
+	// came from, which file was read, and what the file does have.
+	c, _ = Load(home, home, tree("wren", "github.com/x/wren", ""))
+	if _, held := c.Mine(); held {
+		t.Fatal("found a block for wren in a config with none")
+	}
+	err = c.NoBlock()
+	if err == nil {
+		t.Fatal("no error for a project with no block")
+	}
+	for _, want := range []string{
+		"wren", "go.mod", "github.com/x/wren", dotfile,
+		"kingfisher", "miami",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+
+	// the same, against a config with no blocks at all.
+	empty := t.TempDir()
+	c, _ = Load(empty, empty, tree("wren", "github.com/x/wren", ""))
+	if err := c.NoBlock(); err == nil ||
+		!strings.Contains(err.Error(), "no project blocks") {
+		t.Fatalf("an empty config should say it has no blocks: %v", err)
+	}
+}

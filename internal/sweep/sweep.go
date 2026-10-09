@@ -1,7 +1,6 @@
-// Package sweep looks through a tree for what must not be published:
-// attribution trailers in history, session urls, uuids, paths on one
-// machine, email addresses, and any word from a list kept outside the
-// tree, where the names that must never appear live.
+// Package sweep finds forbidden content in a tree. forbidden content
+// includes attribution in history, session urls, uuids, machine paths,
+// emails, and never-words. never-words are in never.go as salted hashes.
 package sweep
 
 import (
@@ -20,8 +19,7 @@ type Hit struct {
 	File string
 }
 
-// the patterns are assembled from pieces so this source never matches
-// itself when a tree that holds it is swept.
+// the patterns avoid matching this source when a tree is swept.
 var (
 	trailers = regexp.MustCompile("Co-Auth" + "ored-By|Cla" + "ude-Session")
 	urls     = regexp.MustCompile(
@@ -38,35 +36,28 @@ var (
 		`[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[a-z]{2,}`,
 	)
 
-	// the names RFC 2606 reserves are not anybody's address, and a usage
-	// line that shows what a setting looks like has to show something.
-	// these are the one shape an address may take in a release.
+	// reserved matches addresses in the domains RFC 2606 reserves. they
+	// are nobody's, so they pass.
 	reserved = regexp.MustCompile(
 		`@example\.(com|org|net)$|` +
 			`@[A-Za-z0-9.-]*\.(example|invalid|test|localhost)$`,
 	)
 )
 
-// bare is whether text holds a uuid standing on its own. one inside a
-// link is a record id in somebody's catalogue, which a data source is
-// entitled to have; a session link is the urls rule's business, so
-// nothing is lost by looking past every link here.
+// bare checks if text holds a uuid not inside a link.
 func bare(text string) bool {
 	return uuids.MatchString(links.ReplaceAllString(text, ""))
 }
 
-// mailed is whether text holds an email address that is somebody's. An
-// address in a reserved documentation domain is nobody's, and a usage
-// line has to be able to show the shape of one.
+// mailed checks if text has a non-reserved email.
 func mailed(text string) bool {
 	for _, at := range emails.FindAllStringIndex(text, -1) {
 		m := text[at[0]:at[1]]
 		if reserved.MatchString(m) {
 			continue
 		}
-		// git@host:path is a remote in the old ssh spelling, and the
-		// dist line of a config is written that way. the colon after
-		// it is what tells them apart.
+		// git@host:path is a remote, not an address. the colon after
+		// the host tells them apart.
 		if strings.HasPrefix(m, "git@") && at[1] < len(text) &&
 			text[at[1]] == ':' {
 			continue
@@ -76,8 +67,8 @@ func mailed(text string) bool {
 	return false
 }
 
-// Words reads the word list, one per line, blanks and # lines ignored.
-// A missing file is an empty list.
+// Words reads the never-words list. ignores blanks and # lines. returns empty
+// if file missing.
 func Words(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -109,9 +100,7 @@ func History(r repo.Repo, rev string) ([]Hit, error) {
 	return nil, nil
 }
 
-// allowSaid translates the word a .game uses for a kind of hit into the
-// kind a hit carries.
-//
+// allowSaid maps game terms to hit kinds.
 // two are prefixes, because the hit names the word or the author found.
 var allowSaid = map[string]string{
 	"paths":    "machine paths",
@@ -122,13 +111,8 @@ var allowSaid = map[string]string{
 	"word":     "listed word ",
 }
 
-// Allowed says whether a repository has declared this kind of hit, in this
-// file, to be something it means to carry.
-//
-// a forensics tool's subject is the estate it was used on, so the marks are
-// the product rather than a leak. the declaration is per file and per kind
-// so that a future real leak in the same file is still found, which a whole
-// file exclusion or an --i-mean-it would hide.
+// Allowed checks if a file and kind are permitted by the .game config.
+// it allows specific kinds in specific files. anything else is blocked.
 func Allowed(allow map[string][]string, file, kind string) bool {
 	for _, said := range allow[file] {
 		want, ok := allowSaid[said]
@@ -148,16 +132,13 @@ func Allowed(allow map[string][]string, file, kind string) bool {
 	return false
 }
 
-// Tree sweeps every tracked file at a revision, except those under the
-// excluded prefixes, for the fixed patterns and the words.
-//
-// The author's name is a word like the others when given: a repository
-// in the first person does not name its author in the third, in a change
-// or in the tree that changes made.
+// Tree sweeps every tracked file at rev, except under the excluded prefixes.
+// it checks the fixed patterns, the never-words and the author's name when
+// given. allow lets a file carry listed kinds, never a never-word.
 func Tree(
 	r repo.Repo,
 	rev string,
-	words []string,
+	never Never,
 	author string,
 	allow map[string][]string,
 	exclude ...string,
@@ -165,13 +146,6 @@ func Tree(
 	files, err := r.Files(rev, exclude...)
 	if err != nil {
 		return nil, err
-	}
-	wordRes := make([]*regexp.Regexp, 0, len(words))
-	for _, w := range words {
-		wordRes = append(
-			wordRes,
-			regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(w)+`\b`),
-		)
 	}
 	var authorRe *regexp.Regexp
 	if author != "" {
@@ -201,13 +175,10 @@ func Tree(
 				hits = append(hits, Hit{p.kind, f})
 			}
 		}
-		for i, re := range wordRes {
-			kind := "listed word " + words[i]
-			if re.MatchString(body) && !Allowed(allow, f, kind) {
-				hits = append(hits, Hit{kind, f})
-			}
+		if never.found(body) {
+			hits = append(hits, Hit{NeverWord, f})
 		}
-		// a licence is the one file whose job is to name the author.
+		// a licence file may name the author.
 		if authorRe != nil && !isLicence(f) &&
 			authorRe.MatchString(body) &&
 			!Allowed(allow, f, "the author "+author) {
@@ -217,8 +188,8 @@ func Tree(
 	return hits, nil
 }
 
-// isLicence is whether a path is the licence file: `LICENSE` or
-// `COPYING`, any case, any extension, at any depth.
+// isLicence is whether a path is a file called `LICENSE`, `LICENCE` or
+// `COPYING`, in any case, with any extension, at any depth.
 func isLicence(f string) bool {
 	base := strings.ToUpper(path.Base(f))
 	if i := strings.IndexByte(base, '.'); i >= 0 {
@@ -237,8 +208,9 @@ func utf8ish(s string) bool {
 }
 
 // Text sweeps one piece of prose, a commit subject say, for the fixed
-// patterns and the words; the file named in a hit is the label given.
-func Text(label, text string, words []string) []Hit {
+// patterns, attribution trailers and the never-words. hits name label as
+// their file.
+func Text(label, text string, never Never) []Hit {
 	var hits []Hit
 	for _, p := range []struct {
 		kind  string
@@ -254,11 +226,8 @@ func Text(label, text string, words []string) []Hit {
 			hits = append(hits, Hit{p.kind, label})
 		}
 	}
-	for _, w := range words {
-		if regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(w) + `\b`).
-			MatchString(text) {
-			hits = append(hits, Hit{"listed word " + w, label})
-		}
+	if never.found(text) {
+		hits = append(hits, Hit{NeverWord, label})
 	}
 	return hits
 }

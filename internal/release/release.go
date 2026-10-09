@@ -1,45 +1,51 @@
 // Package release cuts what leaves: one flat commit per release, holding
 // the whole tree and none of the road to it.
 //
-// Prepare builds that commit from the branch you are on, parented on
-// dist's current main so a clone only ever fast-forwards, proves it has
-// exactly that branch's tree, sweeps it, and keeps it under
-// refs/game/release.
+// Prepare builds a commit from the current branch, parented on dist's
+// main so clones fast-forward, proves it has that branch's tree, sweeps
+// it, and stores it under refs/game/release.
 //
-// Push sends a prepared release to dist, and nothing else ever does.
+// Push sends a prepared release to dist.
 package release
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/janearc/game/internal/repo"
 	"github.com/janearc/game/internal/sweep"
 )
 
+// errNoNeverWords is why a game built without never-words will not release.
+var errNoNeverWords = fmt.Errorf("this game was built without " +
+	"never-words, so it cannot sweep for them: run bootstrap.sh where " +
+	"the list is, and release again")
+
 // Options are what a release needs to know.
 type Options struct {
-	Name    string   // the project, which names the release commit
-	Dist    string   // the clean remote, a path or url
-	Tag     string   // the release's tag, v0.3.0 say
-	Words   []string // the sweep's word list
+	Name string // the project, which names the release commit
+	Dist string // the clean remote, a path or url
+	Tag  string // the release's tag, v0.3.0 say
+	// Never is the never-words game was built with.
+	Never   sweep.Never
 	Exclude []string // path prefixes the sweep leaves alone, kept verbatim
-	// Allow is, per file, the kinds of sweep hit this repository has
-	// declared it means to carry.
+	// Allow is, per file, the kinds of sweep hit this repository accepts.
 	Allow map[string][]string
-	// Omit is files that belong on the road and in no release. the
-	// sweep's exclude only scopes what is scanned; a file nobody scans
-	// still ships, so keeping it out is a separate word.
+	// Omit is files that stay on the road and are left out of every
+	// release. exclude does not do this; it only skips scanning.
 	Omit   []string
-	Author string   // the author's name, refused in the released tree
-	Values []string // the builder's setting values, refused in the tree
+	Author string // the author's name, refused in the released tree
+	// License is a path to the one license every release carries. empty
+	// means the release keeps whatever license the repository has.
+	License string
+	Values  []string // your setting values, refused in the tree
 }
 
 // Ref is where a prepared release waits for its push.
 func Ref(tag string) string { return "refs/game/release/" + tag }
 
-// Message is a release commit's whole message: the project and its tag,
-// and no notes, since the notes are the road and the road stays home.
+// Message is a release commit's whole message: the project and its tag.
 func Message(name, tag string) string { return name + " " + tag }
 
 // Result says what happened.
@@ -51,15 +57,91 @@ type Result struct {
 	Hits    []sweep.Hit
 }
 
-// Prepare builds, proves and sweeps a release and keeps it at Ref(tag).
-// A dirty tree, a tree mismatch, a sweep hit or a setting's value in the
-// tree stops it, and nothing is kept.
+// Plan is the two ends of a release: dist's main and the branch's tree.
+//
+// Prepare and Diff both start here, so a diff shows what a push would send.
+// it fetches dist's main first.
+func Plan(r repo.Repo, o Options) (tree, parent string, err error) {
+	if o.License != "" {
+		tree, err = r.TreeWithLicense(
+			"HEAD", o.Omit, "LICENSE.txt", o.License,
+		)
+	} else {
+		tree, err = r.TreeWithout("HEAD", o.Omit)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if parent, err = r.RemoteMain(o.Dist); err != nil {
+		return "", "", err
+	}
+	if parent != "" {
+		if _, err = r.Git(
+			"fetch", "-q", o.Dist, "refs/heads/main",
+		); err != nil {
+			return "", "", err
+		}
+	}
+	return tree, parent, nil
+}
+
+// Difference is what a release would change on dist.
+type Difference struct {
+	Tree   string // the flat tree this branch would send
+	Parent string // dist's main, empty when dist has nothing yet
+	Stat   string // one line a file: the shape of the change
+	Patch  string // the whole unified diff
+	Same   bool   // dist already has this tree, so a release is a no-op
+	Hits   []sweep.Hit
+}
+
+// Diff shows what a push would change on dist. it reports sweep hits
+// rather than refusing, because a refused release is worth looking at.
+func Diff(r repo.Repo, o Options) (Difference, error) {
+	var d Difference
+	tree, parent, err := Plan(r, o)
+	if err != nil {
+		return d, err
+	}
+	d.Tree, d.Parent = tree, parent
+	from := parent
+	if from == "" {
+		// the empty tree is asked of git rather than typed from memory.
+		if from, err = r.Git(
+			"hash-object", "-t", "tree", os.DevNull,
+		); err != nil {
+			return d, err
+		}
+	} else if t, _ := r.Tree(parent); t == tree {
+		d.Same = true
+		return d, nil
+	}
+	if d.Stat, err = r.Git("diff", "--stat", from, tree); err != nil {
+		return d, err
+	}
+	if d.Patch, err = r.Git("diff", from, tree); err != nil {
+		return d, err
+	}
+	if d.Hits, err = sweep.Tree(
+		r, tree, o.Never, o.Author, o.Allow, o.Exclude...,
+	); err != nil {
+		return d, err
+	}
+	return d, nil
+}
+
+// Prepare builds, proves and sweeps a release, and keeps it at Ref(tag). a
+// missing tag or never-words, a dirty tree, a tree mismatch, a sweep hit or a
+// setting's value in the tree stops it with nothing kept.
 func Prepare(r repo.Repo, o Options) (Result, error) {
 	var res Result
 	if o.Tag == "" {
 		return res, fmt.Errorf(
 			"a release needs a tag: game release v0.3.0",
 		)
+	}
+	if o.Never.Empty() {
+		return res, errNoNeverWords
 	}
 	clean, err := r.Clean()
 	if err != nil {
@@ -70,22 +152,14 @@ func Prepare(r repo.Repo, o Options) (Result, error) {
 			"the tree is dirty; commit first, to the road",
 		)
 	}
-	tree, err := r.TreeWithout("HEAD", o.Omit)
+	tree, current, err := Plan(r, o)
 	if err != nil {
 		return res, err
 	}
 	res.Tree = tree
-	current, err := r.RemoteMain(o.Dist)
-	if err != nil {
-		return res, err
-	}
 	res.Parent = current
 	args := []string{"commit-tree", tree}
 	if current != "" {
-		_, err := r.Git("fetch", "-q", o.Dist, "refs/heads/main")
-		if err != nil {
-			return res, err
-		}
 		if t, _ := r.Tree(current); t == tree {
 			res.Skipped = true
 			res.Commit = current
@@ -112,7 +186,7 @@ func Prepare(r repo.Repo, o Options) (Result, error) {
 		return res, err
 	}
 	th, err := sweep.Tree(
-		r, res.Commit, o.Words, o.Author, o.Allow,
+		r, res.Commit, o.Never, o.Author, o.Allow,
 		o.Exclude...)
 	if err != nil {
 		return res, err
@@ -129,9 +203,7 @@ func Prepare(r repo.Repo, o Options) (Result, error) {
 	return res, err
 }
 
-// values is every file at a revision that holds one of the builder's
-// setting values: a value belongs in a dotfile, and a release that
-// carries one has carried the builder with it.
+// values finds files at a revision that hold your setting values.
 func values(r repo.Repo, rev string, vals []string) ([]sweep.Hit, error) {
 	if len(vals) == 0 {
 		return nil, nil
@@ -162,13 +234,12 @@ func values(r repo.Repo, rev string, vals []string) ([]sweep.Hit, error) {
 	return hits, nil
 }
 
-// Guard is the environment a push to dist carries, which the pre-push
-// hook game installs lets through and nothing else sets.
+// Guard is the environment a push to dist carries. the pre-push hook lets it
+// through.
 const Guard = "GAME_RELEASE_PUSH=1"
 
-// Push sends a prepared release to dist: its commit as main and its tag.
-// It refuses when dist's main has moved since the release was prepared,
-// because the flat commit's parent would no longer be what a clone has.
+// Push sends a release's commit and tag to dist. it refuses if dist's
+// main has changed since the release was prepared.
 func Push(r repo.Repo, o Options) (Result, error) {
 	var res Result
 	commit, err := r.Git("rev-parse", "--verify", "-q", Ref(o.Tag))

@@ -474,3 +474,55 @@ func TestAllowRows(t *testing.T) {
 		}
 	}
 }
+
+// TestVerdictCountsLooks is the regression test for the gate that was not a
+// gate. before 2026-09-16 a set of findings that were all looks produced no
+// error, so `game lint` printed its tallies and exited nought, and every
+// chain, hook and script that used the verb as a gate carried on past real
+// findings. two sessions hit it independently on the same evening.
+func TestVerdictCountsLooks(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		found []Finding
+		fix   int
+		look  int
+		fails bool
+	}{
+		{"nothing at all", nil, 0, 0, false},
+		{
+			"only a look, and it must still fail",
+			[]Finding{{File: "a.go", Line: 7, Rule: "width", Look: true}},
+			0, 1, true,
+		},
+		{
+			"only a fix",
+			[]Finding{{File: "a.go", Line: 1, Rule: "paragraph"}},
+			1, 0, true,
+		},
+		{
+			"both, and the message says both",
+			[]Finding{
+				{File: "a.go", Line: 1, Rule: "paragraph"},
+				{File: "a.go", Line: 7, Rule: "width", Look: true},
+			},
+			1, 1, true,
+		},
+	} {
+		fix, look, err := Verdict(c.found)
+		if fix != c.fix || look != c.look {
+			t.Errorf("%s: fix %d look %d, want %d and %d",
+				c.name, fix, look, c.fix, c.look)
+		}
+		if (err != nil) != c.fails {
+			t.Errorf("%s: err %v, want failure=%v", c.name, err, c.fails)
+		}
+	}
+	// the counts belong in the message, because a person reads it
+	_, _, err := Verdict([]Finding{
+		{Rule: "width"},
+		{Rule: "width", Look: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 to fix, 1 to look at") {
+		t.Errorf("message %v, want both counts", err)
+	}
+}

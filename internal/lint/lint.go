@@ -1,18 +1,16 @@
-// Package lint runs whatever lint is described: the rules are lines
-// in the dotfile or the repository's .game, and game has no opinions
-// of its own.
+// Package lint runs the lint rules written in your config or the repository's
+// .game. game has no opinions of its own.
 //
-// what a rule can be: every function commented on the line above it; no
-// bare print outside package main, since a daemon logs and a library
-// returns; banned words; no exclamation marks in docs.
+// a rule can ask that every function has a comment above it, that there is no
+// bare print outside package main, that banned words stay out, and that docs
+// have no exclamation marks.
 //
-// a width for prose, docs and comments, with wider code reported to look
-// at, since a struct tag or a long string can be the good reason; a
-// height for a readme; and shouty capitals in comments, reported rather
-// than failed, because MUST and JSON are allowed to shout.
+// prose, docs and comments have a width, and wider code is reported to look
+// at. a readme has a height. shouty capitals in comments are reported, not
+// failed.
 //
-// go vet and gofmt are check's; staticcheck runs here if it is on the
-// path.
+// go vet and gofmt belong to check. staticcheck runs here, and a missing
+// staticcheck is a finding.
 package lint
 
 import (
@@ -34,7 +32,28 @@ type Finding struct {
 	Line int
 	Rule string
 	Text string
-	Look bool // reported, not failed
+	Look bool // seen rather than named, and it still fails
+}
+
+// Verdict counts the fix and look findings, and returns an error if there are
+// any of either.
+func Verdict(found []Finding) (fix, look int, err error) {
+	for _, f := range found {
+		if f.Look {
+			look++
+		} else {
+			fix++
+		}
+	}
+	switch {
+	case fix > 0 && look > 0:
+		err = fmt.Errorf("lint: %d to fix, %d to look at", fix, look)
+	case fix > 0:
+		err = fmt.Errorf("lint: %d to fix", fix)
+	case look > 0:
+		err = fmt.Errorf("lint: %d to look at", look)
+	}
+	return fix, look, err
 }
 
 // String is the finding as one line: lint for a thing to fix, look for
@@ -158,12 +177,8 @@ func Describe(rules []struct {
 	return l, nil
 }
 
-// testy is whether a path is a test rather than the thing being shipped.
-//
-// a test is ours to write as we like: it holds long table rows, fixtures
-// and json on one line, and holding it to the width a reader of the
-// shipped code needs buys nothing. a config that says "lint tests" gets
-// them linted anyway.
+// testy returns true if the path is a test file. Run skips test files
+// unless Tests is set.
 func testy(path string) bool {
 	base := filepath.Base(path)
 	switch {
@@ -187,13 +202,11 @@ func (l Lint) Empty() bool {
 		!l.Print && !l.Exclaim && !l.Shout && l.words == nil
 }
 
-// a run of capitals that is probably shouting: five or more letters,
-// not one of the acronyms that are allowed to.
+// shout matches a run of five or more capitals.
 var shout = regexp.MustCompile(`\b[A-Z]{5,}\b`)
 
-// shouted is the capitals in a line that are shouting: not allowed words,
-// not a file's name (DESIGN.md, LICENSE.txt), and not inside backticks,
-// where a name is quoted rather than said.
+// shouted returns the runs of capitals in a line that are shouting. it skips
+// allowed words, file names and anything inside backticks.
 func shouted(line string) []string {
 	var out []string
 	ticks := 0
@@ -210,12 +223,8 @@ func shouted(line string) []string {
 	return out
 }
 
-// header is how many lines at the top of a document are its art.
-//
-// a readme in this house opens with a picture, the way a manpage opens
-// with a name: a title, then one block of art, then the page itself. the
-// art is not prose and does not count against the height, and a block
-// anywhere further down is code and does.
+// header is how many lines at the top of a document are its art: a title and
+// one fenced or indented block after it. a block further down is not art.
 func header(lines []string) int {
 	i := 0
 	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
@@ -259,12 +268,9 @@ func header(lines []string) int {
 	return j
 }
 
-// named is whether the capitals at from:to are part of a file's name.
-//
-// the token around them is taken whole, since a name is letters, digits,
-// dots, hyphens, underscores and slashes, and a name is anything in that
-// token with a lowercase extension on the end: DESIGN.md, LICENSE.txt,
-// Runbook-restore.md, doc/operation.md.
+// named is whether the capitals at from:to sit in a file's name, as DESIGN.md
+// does. the name is the whole token of letters, digits, dots, hyphens,
+// underscores and slashes around them, and it needs a lowercase extension.
 func named(line string, from, to int) bool {
 	part := func(c byte) bool {
 		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
@@ -291,21 +297,19 @@ func named(line string, from, to int) bool {
 	return true
 }
 
-// importLine is the shape of an import: a path, with an alias, a dot or an
-// underscore in front of it at most.
+// importLine matches an import line. at most an alias, a dot or an underscore
+// comes before the path.
 var importLine = regexp.MustCompile(
 	`^\s*([A-Za-z_]\w*|\.|_)?\s*"[^"]+"\s*(//.*)?$`)
 
-// keywords that can stand in front of a string and make a statement, not
-// an import.
+// keywords that can start a statement, not an import.
 var notAnAlias = map[string]bool{
 	"return": true, "case": true, "panic": true, "go": true, "defer": true,
 	"chan": true, "range": true, "break": true, "continue": true,
 }
 
-// imported is whether a line of go is an import: a path is one token and
-// cannot be split, so its width is not a thing to fix. only the alias in
-// front of it could be shorter, and that is a name, not a width.
+// imported checks if a line is an import. the path is one token and
+// cannot be split. only the alias could be shorter, but it is a name.
 func imported(line string) bool {
 	m := importLine.FindStringSubmatch(line)
 	if m == nil {
@@ -314,12 +318,8 @@ func imported(line string) bool {
 	return !notAnAlias[m[1]]
 }
 
-// allowed is a line the repository has said to leave alone: "game: allow
-// RULE" in a comment on the line, or in a comment on the line above it.
-//
-// a rule with a counted debt is worth arguing with once. a line that is
-// long because the thing it holds is long, an id, a url, a pattern, says
-// so where it sits, and the count then means what it says.
+// allowedHere is whether line i, or the comment line above it, says "game:
+// allow RULE". a bare "game: allow" allows every rule.
 func allowedHere(lines []string, i int, rule string) bool {
 	says := func(text string) bool {
 		at := strings.Index(text, "game: allow")
@@ -345,19 +345,14 @@ func allowedHere(lines []string, i int, rule string) bool {
 	return false
 }
 
-// tagged is whether a line of go is a struct field with a tag: the tag
-// is one literal in the grammar and cannot be split, so its width is
-// never a thing to fix.
-//
-// the type may be written inline, as struct{ A, B string }, when it has
-// no braces of its own inside.
+// tagged matches a struct field with a tag. the tag is one literal
+// and cannot be split. the type may be inline with no braces.
 var tagged = regexp.MustCompile(
 	`^\s*[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*\s+` +
 		`([][*.\w]*struct\{[^{}` + "`" + `]*\}|[][*.\w]+(\{\})?)` +
 		`\s+` + "`[^`]*`" + `\s*(//.*)?$`)
 
-// allowed is what may be in capitals: acronyms, and the words RFC 2119
-// gives capitals to. everything else is sentence case.
+// allowed lists acronyms and RFC 2119 terms that may be in capitals.
 var allowed = map[string]bool{
 	"ASCII":   true,
 	"ANSI":    true,
@@ -379,13 +374,10 @@ var allowed = map[string]bool{
 	"RECOMMENDED": true, "OPTIONAL": true,
 }
 
-// Run lints a module rooted at dir by the rules described. What is
-// linted is what git tracks or is about to: an ignored directory is
-// somebody else's prose, but a new file not yet added is ours, and a
-// lint that cannot see it calls a tree clean before its first commit.
-//
-// Outside a repository every file under dir counts, except testdata and
-// bin.
+// Run lints a module rooted at dir by the rules described. it lints what git
+// tracks or would track. outside a repository it walks dir and skips hidden
+// directories, bin, build, testdata and vendor. test files are left alone
+// unless Tests is set.
 func (l Lint) Run(dir string) ([]Finding, error) {
 	files, err := tracked(dir)
 	if err != nil {
@@ -415,10 +407,8 @@ func (l Lint) Run(dir string) ([]Finding, error) {
 			out = append(out, f...)
 		}
 	}
-	// a class that did not run is not a class that passed. an absent
-	// linter printed a note beside an exit of zero, which is a green
-	// light bolted to a cut wire: every repository here reported clean
-	// with staticcheck never once run against it.
+	// a missing linter is a failure. staticcheck must run. if it is
+	// not present, report it.
 	sc := tool("staticcheck")
 	if sc == "" {
 		out = append(out, Finding{
@@ -435,9 +425,8 @@ func (l Lint) Run(dir string) ([]Finding, error) {
 		b, _ := cmd.CombinedOutput()
 		body := strings.TrimSpace(string(b))
 		for _, line := range strings.Split(body, "\n") {
-			// only a finding is a finding: staticcheck also
-			// writes warnings, and "matched no packages" is
-			// what a tree with no go in it always gets.
+			// only lines that match finding are kept. others are
+			// ignored.
 			if finding.MatchString(line) {
 				out = append(
 					out,
@@ -467,12 +456,8 @@ func (l Lint) Run(dir string) ([]Finding, error) {
 	return out, nil
 }
 
-// allowSaid translates the word a config uses for a rule into the word a
-// finding uses for it.
-//
-// they differ for four rules: the config names the rule as it is
-// described, the finding as the line is measured. an allowance that does
-// not translate matches nothing, and it used to do so in silence.
+// allowSaid maps the word a config uses for a rule to the word a finding
+// uses. an allowance with no entry here matches nothing.
 var allowSaid = map[string]string{
 	"rows":     "height",
 	"shout":    "shouting",
@@ -481,24 +466,20 @@ var allowSaid = map[string]string{
 	"exclaim":  "exclamation",
 }
 
-// allowKnown is every rule a finding can carry, so an allowance for a rule
-// that does not exist is refused when the config is read rather than
-// quietly allowing nothing.
+// allowKnown is every rule a finding can carry. a rule not in this list
+// is refused when the config is read.
 var allowKnown = map[string]bool{
 	"width": true, "height": true, "paragraph": true,
 	"shouting": true, "uncommented": true, "word": true,
 	"print": true, "exclamation": true, "tests": true,
 }
 
-// finding matches a staticcheck finding, which is file:line:col: text.
+// finding matches a staticcheck finding, written file:line:col then text.
 // anything else it writes is a warning about its own run.
 var finding = regexp.MustCompile(`^[^ ]+:[0-9]+:[0-9]+: `)
 
-// tool finds a linter: on the PATH first, then where go install puts
-// things.
-//
-// `GOBIN` and `GOPATH/bin` are commonly not on a path, and a linter that is
-// installed but unfound is reported as missing.
+// tool returns the path of a linter, or an empty string if none is found. it
+// looks on the PATH, then in `GOBIN` and `GOPATH/bin`.
 func tool(name string) string {
 	if p, err := exec.LookPath(name); err == nil {
 		return p
@@ -523,11 +504,7 @@ func tool(name string) string {
 	return ""
 }
 
-// allowed is whether a config let one file off one rule.
-//
-// the exemption is written where the rest of the lint is written, so the
-// page that carries it is named in the repository rather than marked up
-// inside the prose a reader has to read.
+// allowed checks if a file is exempt from a rule.
 func (l Lint) allowed(file, rule string) bool {
 	for _, name := range l.allow[file] {
 		if name == rule {
@@ -669,15 +646,12 @@ func (l Lint) goFile(path, rel string) ([]Finding, error) {
 	return out, nil
 }
 
-// blocky is whether a line of a comment is a code block rather than
-// prose.
+// blocky checks if a line is code rather than prose.
 //
-// go renders an indented line in a doc comment as code, exactly as a
-// fenced block in markdown is code, and what a usage line holds is
-// grammar: the name of an argument, a setting, a branch.
+// go treats indented lines in doc comments as code, like markdown
+// fences. a usage line holds argument names, settings, or branches.
 //
-// the shout rule reads prose, so it stops at the indent, the way it
-// already stops at a fence.
+// the shout rule stops at indents, like it stops at fences.
 func blocky(line string) bool {
 	t := strings.TrimSpace(line)
 	for _, mark := range []string{"//", "/*", "*"} {
@@ -689,9 +663,7 @@ func blocky(line string) bool {
 	return strings.HasPrefix(t, "\t") || strings.HasPrefix(t, "    ")
 }
 
-// doc is the rules for one markdown file: banned words, no exclamation
-// marks, since nothing is an emergency because nothing is an emergency,
-// the width, and a readme's height.
+// doc is the rules for one markdown file.
 func (l Lint) doc(path, rel string) ([]Finding, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -731,9 +703,8 @@ func (l Lint) doc(path, rel string) ([]Finding, error) {
 		if code {
 			continue
 		}
-		// the header is a picture, and a picture is not wrapped: it is
-		// already exempt from the height, and the width would ask a
-		// bird to be narrower than it was drawn.
+		// the header is a picture and not wrapped. it is already
+		// exempt from height and width limits.
 		if i < art {
 			continue
 		}
@@ -792,8 +763,7 @@ func (l Lint) doc(path, rel string) ([]Finding, error) {
 	return out, nil
 }
 
-// long is the finding for a paragraph that runs past the rule, named
-// by the line it starts on.
+// long is the finding for a paragraph that runs past the rule.
 func (l Lint) long(rel string, start, n int) Finding {
 	return Finding{
 		rel,
@@ -804,13 +774,13 @@ func (l Lint) long(rel string, start, n int) Finding {
 	}
 }
 
-// listItem is whether a line of prose starts a list item, which is a
-// paragraph of its own.
+// listItem matches a line that starts a list item, which is a paragraph of
+// its own.
 var listItem = regexp.MustCompile(`^\s*([-*+]|\d+[.)])\s`)
 
-// docParagraphs is every paragraph of prose in a markdown file that runs
-// past the rule. a paragraph is a run of lines between blank ones; a
-// list item starts a new one; code, tables and headings are not prose.
+// docParagraphs returns the paragraphs of prose in a markdown file that run
+// past the rule. a blank line or a list item ends one. code, tables and
+// headings are skipped.
 func (l Lint) docParagraphs(lines []string, rel string) []Finding {
 	var out []Finding
 	start, n, fence := 0, 0, false
@@ -848,10 +818,9 @@ func (l Lint) docParagraphs(lines []string, rel string) []Finding {
 	return out
 }
 
-// commentParagraphs is every paragraph in one comment group that runs
-// past the rule: runs of comment lines between empty ones, a list item
-// starting a new one, and indented lines, which are code or a table in
-// a comment, left out.
+// commentParagraphs returns the paragraphs in one comment group that run past
+// the rule. a blank line or a list item ends one. indented lines, go: lines
+// and nolint lines are skipped.
 func (l Lint) commentParagraphs(
 	fset *token.FileSet,
 	cg *ast.CommentGroup,
@@ -909,8 +878,8 @@ func width(line string) int {
 	return n
 }
 
-// tracked is every file git tracks or would track under dir, relative
-// to it, except testdata; an error means dir is not a repository.
+// tracked lists the files git tracks or would track under dir, except
+// testdata. an error means dir is not a repository.
 func tracked(dir string) ([]string, error) {
 	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--others",
 		"--exclude-standard")
@@ -930,8 +899,7 @@ func tracked(dir string) ([]string, error) {
 	return out, nil
 }
 
-// walked is every file under dir, for a directory that is not a
-// repository, skipping what a repository would ignore anyway.
+// walked lists every file under dir, skipping what a repo would ignore.
 func walked(dir string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(

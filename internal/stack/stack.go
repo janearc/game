@@ -1,14 +1,11 @@
-// Package stack builds many repositories as one. A stack file names each
-// member and the ref to build; the builder's config says where each one
-// lives, on the road or on dist.
+// Package stack builds many repos as one. a stack file lists each member
+// and the ref to build. your config says where each one lives.
 //
-// Each is cloned fresh and built by game in a child process of its own,
-// which reports back as events, one line of JSON each. The parent alone
-// decides what passed.
+// each is cloned fresh and built by game in its own child process.
+// the parent decides what passed.
 //
-// The events are JSON lines described by a Go type rather than a protobuf
-// message: game needs git and go and nothing else, and the only reader of
-// the stream is game.
+// events are JSON lines described by a Go type. game needs git and go.
+// the only reader of the stream is game.
 package stack
 
 import (
@@ -43,16 +40,14 @@ type Event struct {
 	Text  string `json:"text,omitempty"`
 }
 
-// transient is output that says the network failed rather than the code:
-// worth another try, where a compile error is not.
+// transient matches network errors that may resolve on retry.
 var transient = regexp.MustCompile(
 	`(?i)dial tcp|i/o timeout|connection reset|TLS handshake|` +
 		`temporary failure|could not resolve|\b50[234]\b|` +
 		`unexpected EOF`,
 )
 
-// Kind is transient for output that reads as the network, deterministic
-// for everything else.
+// Kind is transient for network output, deterministic for others.
 func Kind(output string) string {
 	if transient.MatchString(output) {
 		return "transient"
@@ -60,8 +55,8 @@ func Kind(output string) string {
 	return "deterministic"
 }
 
-// Failure is what a Fixer is handed: which member, where it is checked
-// out, which step failed, and the child's last words.
+// Failure is what a Fixer is handed: the member, its directory, the step that
+// failed and the child's output.
 type Failure struct {
 	Member
 	Dir  string
@@ -70,9 +65,7 @@ type Failure struct {
 }
 
 // Fixer is the seam where an agent repairs a deterministic failure. It
-// returns the name of a branch holding a fix, which the stack rebuilds
-// from, or an empty name to give up. A fix never makes a ref pass: the
-// row says what failed and where it passed after.
+// returns the name of a branch holding a fix, or an empty name to give up.
 type Fixer interface {
 	Fix(ctx context.Context, f Failure) (branch string, err error)
 }
@@ -101,8 +94,7 @@ type Options struct {
 	Work     string
 	Child    func(dir string) *exec.Cmd // the build a member gets
 	Parallel int
-	// Quiet leaves the members' art out, for a log rather than a
-	// terminal.
+	// Quiet leaves the members' art out, for a log.
 	Quiet bool
 	Tries int // attempts at a transient failure, clone or build
 	Fixer Fixer
@@ -110,14 +102,13 @@ type Options struct {
 	Sleep func(time.Duration)
 }
 
-// Run builds every member, at most Parallel at once, and returns a row
-// each, in the stack's order. The error is only for a stack that could
-// not start; a member that fails is a row, not an error.
+// Run builds every member, at most Parallel at once, and returns their rows
+// in the stack's order. run one at a time, it stops after the first failed
+// row. the error is only for a stack that could not start.
 func Run(ctx context.Context, o Options) ([]Row, error) {
 	if o.Parallel < 1 {
-		// one at a time by default: the members announce themselves
-		// with their own art as they are reached, and a failure stops
-		// the run where it happened rather than in a table at the end.
+		// one at a time by default. each member shows its art as it is
+		// reached, and a failure stops the run there.
 		o.Parallel = 1
 	}
 	if o.Tries < 1 {
@@ -138,8 +129,8 @@ func Run(ctx context.Context, o Options) ([]Row, error) {
 	rows := make([]Row, 0, len(o.Members))
 	var mu sync.Mutex
 	if o.Parallel == 1 {
-		// one at a time, which is what lets a member announce itself
-		// as it is reached and what makes a stop mean "here".
+		// one at a time, each member's art shows as it is reached and
+		// the first failure stops the run.
 		for _, m := range o.Members {
 			o.card(m, &mu)
 			row := o.member(ctx, m, &mu)
@@ -166,12 +157,9 @@ func Run(ctx context.Context, o Options) ([]Row, error) {
 	return all, nil
 }
 
-// art is a member's own card: art/NAME.ansi, where NAME is what the
-// member's .game calls the project, since a directory called
-// cassowary-dist holds a project that is still called cassowary.
-//
-// the directory name is tried too, and then a lone .ansi in art/, so a
-// member that named its file sensibly is not punished for it.
+// art reads a member's card from art/NAME.ansi. NAME is the project name in
+// the member's .game, then the directory name. failing both, a lone .ansi in
+// art/ is used. the bool is false when there is none.
 func (o Options) art(m Member) ([]byte, bool) {
 	dir := filepath.Join(o.Work, m.Name, "art")
 	names := []string{m.Name}
@@ -208,11 +196,8 @@ func (o Options) art(m Member) ([]byte, bool) {
 	return b, true
 }
 
-// card writes a member's art to the output as the build reaches it, if
-// the member has any and the output is something a person is watching.
-//
-// it is deliberately quiet about failure: art that cannot be read is not
-// a reason to stop a build, and a member with none is the ordinary case.
+// card writes a member's art unless Quiet is set. on a terminal it clears the
+// screen first. missing or unreadable art is skipped.
 func (o Options) card(m Member, mu *sync.Mutex) {
 	if o.Quiet {
 		return
@@ -236,9 +221,9 @@ func (o Options) card(m Member, mu *sync.Mutex) {
 	fmt.Fprintf(o.Out, "%s\n\n", strings.TrimRight(string(b), "\n"))
 }
 
-// member clones one member and builds it, retrying what is transient,
-// telling a flaky test from a failing one, and handing a deterministic
-// failure to the Fixer.
+// member clones one member and builds it. it retries transient errors, reruns
+// a failed test to tell flaky from failing, and gives other failures to the
+// Fixer.
 func (o Options) member(ctx context.Context, m Member, mu *sync.Mutex) Row {
 	row := Row{Member: m}
 	say := func(format string, a ...any) {
@@ -251,10 +236,9 @@ func (o Options) member(ctx context.Context, m Member, mu *sync.Mutex) Row {
 	}
 	dir, url := filepath.Join(o.Work, m.Name), ""
 	if o.URL == nil {
-		// no remote to ask: the members are already here, which is
-		// what a clone of an assembled stack looks like. a member is
-		// whatever sits under its name; one with no go.mod is checked
-		// by its own test target, not by go.
+		// no remote to ask: the members are already here. a member
+		// is whatever sits under its name. one with no go.mod is
+		// checked by its own test target.
 		if _, err := os.Stat(filepath.Join(dir, ".game")); err != nil {
 			row.Result, row.Failed = "failed", "here"
 			row.Text = m.Name + " is not in this clone"
@@ -297,8 +281,8 @@ func (o Options) member(ctx context.Context, m Member, mu *sync.Mutex) Row {
 		return row
 	}
 	if url == "" {
-		// a fix lives on a branch of a remote, and there is no remote
-		// when the members are already here.
+		// a fix is on a remote branch, but there is no remote when
+		// the members are already here.
 		return row
 	}
 	say("a fix is offered on %s; building it", branch)
@@ -312,8 +296,8 @@ func (o Options) member(ctx context.Context, m Member, mu *sync.Mutex) Row {
 	return row
 }
 
-// build runs the child, retrying a transient failure with backoff, and
-// returns the failing event when it does not pass.
+// build runs the child, retrying a transient failure with backoff. it returns
+// the failing event and false when it does not pass.
 func (o Options) build(
 	ctx context.Context,
 	dir string,
@@ -342,8 +326,8 @@ func (o Options) build(
 	return last, false
 }
 
-// run is one child: its events read as they come, the lint count kept, and
-// the first failure returned.
+// run is one child: events read as they come, lint count kept, first failure
+// returned.
 func (o Options) run(ctx context.Context, dir string, row *Row) (Event, bool) {
 	cmd := o.Child(dir)
 	cmd.Dir = dir
@@ -395,8 +379,8 @@ func (o Options) run(ctx context.Context, dir string, row *Row) (Event, bool) {
 	return Event{Step: "done", State: "ok"}, true
 }
 
-// clone checks a ref out fresh, retrying with backoff: a clone that fails
-// is almost always the network.
+// clone checks ref out into dir, removing dir first on each try. it retries
+// with backoff, up to Tries.
 func (o Options) clone(
 	url, ref, dir string,
 	row *Row,
@@ -439,9 +423,8 @@ func (o Options) clone(
 	return err
 }
 
-// backoff is full jitter: a random wait up to a cap that doubles with
-// each attempt, so many builds waiting on one remote do not return to it
-// in step.
+// backoff is full jitter: a random wait up to a cap that starts at one
+// second, doubles each attempt and stops at thirty.
 func (o Options) backoff(attempt int) time.Duration {
 	ceiling := time.Second << attempt
 	if ceiling > 30*time.Second {

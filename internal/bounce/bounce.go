@@ -1,10 +1,7 @@
-// Package bounce keeps a repository in the first person: a change that
-// adds its author's name in the third person is refused until she signs
-// it off.
+// Package bounce flags added lines that name the repository's author.
 //
-// The name is the repository author's, given by the caller; the check is
-// the name as a whole word in added lines, so identifiers keep their
-// case and are not names.
+// the caller gives the name. the check is the name as a whole word in added
+// lines.
 package bounce
 
 import (

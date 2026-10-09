@@ -1,5 +1,5 @@
-// Package repo is the little of git that game needs, run as the git
-// binary in a directory: no library, no second implementation of git.
+// Package repo runs the git binary in a directory, for the little of git that
+// game needs.
 package repo
 
 import (
@@ -15,8 +15,7 @@ type Repo struct {
 	Dir string
 }
 
-// Git runs one git command in the repository and returns its output,
-// trimmed; an error carries git's own words.
+// Git runs a git command in the repo and returns output.
 func (r Repo) Git(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.Dir
@@ -90,19 +89,8 @@ func (r Repo) Tree(
 	return r.Git("rev-parse", rev+"^{tree}")
 }
 
-// TreeWithout is the tree of a revision with the given paths taken out.
-//
-// a release is a flat snapshot of HEAD's tree, and some files belong on
-// the road and in no release: the ones that measure the operator rather
-// than the software.
-//
-// keeping them out happens here, in what the tree contains, because the
-// sweep's exclude only scopes what is read and a file nobody reads still
-// ships.
-//
-// it builds a temporary index rather than touching the working tree or the
-// repository's own index, so a release never disturbs what someone is
-// editing.
+// TreeWithout is the tree of a revision with the given paths removed. it
+// builds a temporary index, so the working tree is not touched.
 func (r Repo) TreeWithout(rev string, omit []string) (string, error) {
 	if len(omit) == 0 {
 		return r.Tree(rev)
@@ -125,8 +113,51 @@ func (r Repo) TreeWithout(rev string, omit []string) (string, error) {
 	return r.GitEnv(env, "write-tree")
 }
 
-// RemoteMain is the commit a remote's main is at, or empty when it has
-// none yet.
+// TreeWithLicense is TreeWithout plus the file at from, added to the tree at
+// path at. a file that cannot be read or is empty is an error. the working
+// copy is not touched.
+func (r Repo) TreeWithLicense(
+	rev string, omit []string, at, from string,
+) (string, error) {
+	body, err := os.ReadFile(from)
+	if err != nil {
+		return "", fmt.Errorf("the licence at %s: %w", from, err)
+	}
+	if len(body) == 0 {
+		return "", fmt.Errorf("the licence at %s is empty", from)
+	}
+	idx, err := os.CreateTemp("", "game-index-*")
+	if err != nil {
+		return "", err
+	}
+	idx.Close()
+	defer os.Remove(idx.Name())
+	env := append(os.Environ(), "GIT_INDEX_FILE="+idx.Name())
+	if _, err := r.GitEnv(env, "read-tree", rev); err != nil {
+		return "", err
+	}
+	if len(omit) > 0 {
+		args := append([]string{
+			"rm", "--cached", "-q", "--ignore-unmatch", "--",
+		}, omit...)
+		if _, err := r.GitEnv(env, args...); err != nil {
+			return "", err
+		}
+	}
+	blob, err := r.GitEnv(env, "hash-object", "-w", "--", from)
+	if err != nil {
+		return "", err
+	}
+	if _, err := r.GitEnv(
+		env, "update-index", "--add", "--cacheinfo",
+		"100644,"+strings.TrimSpace(blob)+","+at,
+	); err != nil {
+		return "", err
+	}
+	return r.GitEnv(env, "write-tree")
+}
+
+// RemoteMain is the commit a remote's main is at. returns empty if none.
 func (r Repo) RemoteMain(remote string) (string, error) {
 	out, err := r.Git("ls-remote", remote, "refs/heads/main")
 	if err != nil {
@@ -138,8 +169,8 @@ func (r Repo) RemoteMain(remote string) (string, error) {
 	return strings.Fields(out)[0], nil
 }
 
-// Files lists every tracked file at a revision, excluding paths under
-// the given prefixes.
+// Files lists every tracked file at a revision, leaving out paths that start
+// with any exclude prefix.
 func (r Repo) Files(rev string, exclude ...string) ([]string, error) {
 	out, err := r.Git("ls-tree", "-r", "--name-only", rev)
 	if err != nil {

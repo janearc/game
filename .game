@@ -1,8 +1,24 @@
+# vim: set filetype=game:
 # game: this repository
 #
-# name is the project: it is the block in the builder's own config that
-# says where this tree's two remotes are. nothing here holds a remote,
-# and a builder who has no block for it builds locally.
+# name says which project this is. your game config,
+# ~/.config/game/config, has a block for it that says where its road and
+# dist are. this file never names a remote; with no block, game builds
+# here and pushes nowhere.
 #
-# game's dist is janearc/game rather than a -dist, because game is game.
+# game's dist is janearc/game rather than a -dist, because game recognize game.
 name game
+
+# lint rules for this repository. any lint line in a .game replaces all
+# the lint rules in your game config, so these lines copy all of them.
+# the last line is the one change: README.md may run past 25 lines of
+# prose.
+lint width 80
+lint rows 25
+lint comments
+lint print
+lint exclaim
+lint shout
+lint words hyperscaler enterprise-grade blazing-fast load-bearing
+lint paragraph 4
+lint allow README.md rows exclaim
