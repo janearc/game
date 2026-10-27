@@ -10,14 +10,14 @@ endif
 " marks one red first. everything below that knows the word wins.
 syn match gameUnknown "^\s*\S\+"
 
-syn match gameKey "^\(author\|words\|name\|exclude\|omit\|sweep\|lint\|target\|run\|needs\|set\|stack\|license\)\>"
+syn match gameKey "^\(author\|words\|name\|exclude\|omit\|sweep\|lint\|target\|run\|needs\|set\|stack\|patches\|license\|rapid\)\>"
 syn match gameProject "^project\>" nextgroup=gameProjectName skipwhite
 syn match gameProjectName "\S\+" contained
 syn match gameBlockKey "^\s\+\(road\|set\)\>"
 " dist is the remote that publishes, so it stands out.
 syn match gameDist "^\s\+dist\>"
 
-syn match gameLintRule "^lint\s\+\zs\(width\|rows\|paragraph\|comments\|print\|exclaim\|shout\|words\|allow\)\>"
+syn match gameLintRule "^lint\s\+\zs\(width\|rows\|paragraph\|comments\|print\|exclaim\|shout\|words\|chain\|commas\|opener\|history\|harden\|allow\)\>"
 syn match gameSweepKind "\<\(paths\|sessions\|uuids\|emails\|word\)\>"
 syn match gameName "^\s*\(set\|needs\|stack\)\s\+\zs\S\+"
 syn match gameNumber "\s\zs\d\+\>"

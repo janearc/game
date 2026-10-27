@@ -12,6 +12,7 @@ lint print
 lint exclaim
 lint shout
 lint words hyperscaler enterprise-grade blazing-fast load-bearing
+# lint harden                     privilege and unsafe file handling
 
 # author   Your Name                 the bounce refuses this name in
 #                                    the third person

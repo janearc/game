@@ -1,0 +1,81 @@
+# numbers.yaml: the numbers lint's tests are held to, by name (ruling 4,
+# 2026-10-18: a test's numbers live in a config, and the test is held to it).
+
+numbers:
+  - name: lint-width
+    value: 80
+    says: the width the tests hold the lint to, as the tree's own .game holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the rule was written
+
+  - name: lint-rows
+    value: 25
+    says: the rows a readme may run to in the tests, as the tree's own .game holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the rule was written
+
+  - name: width-findings
+    value: 3
+    says: the width findings in the everything fixture, the doc's wide line, the wide comment, and the wide code line that is only a look
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: commas-two-findings
+    value: 3
+    says: the findings commas 2 makes in the habits fixture, the three sentences with two or more
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: habit-line-fits
+    value: 60
+    says: the length a habit's sentence is cut to fit, sixty characters, as habits.go's fitsALine holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the cut was written
+
+  - name: generic-method-line
+    value: 5
+    says: the line the generic-methods fixture's method is on, below the package, the type and the blanks
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: paragraph-rule
+    value: 6
+    says: a paragraph rule past the fixtures' paragraphs, so the rule alone is not empty
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: height-rule
+    value: 3
+    says: the rows rule under the art tests, so three lines pass and five do not
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: spare-width
+    value: 99
+    says: a width nobody's rule has, so Describe parsing it is the whole test
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-paragraph
+    value: 6
+    says: the longest paragraph rule drawn, so both sides of the rule are drawn often
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-lines
+    value: 10
+    says: the most lines a drawn paragraph holds, well past the rule
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-sizes
+    value: 6
+    says: the most paragraphs a drawn doc holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-gap
+    value: 3
+    says: the most blank lines between drawn paragraphs
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a

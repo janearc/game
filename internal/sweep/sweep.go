@@ -5,6 +5,9 @@ package sweep
 
 import (
 	"bufio"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path"
 	"regexp"
@@ -15,9 +18,18 @@ import (
 
 // Hit is one thing found: what kind, in which file.
 type Hit struct {
-	Kind string
-	File string
+	kind string
+	file string
 }
+
+// Found is one hit of a kind in a file.
+func Found(kind, file string) Hit {
+	return Hit{kind: kind, file: file}
+}
+
+// String is the hit as a release's refusal names it: the kind, in the
+// file.
+func (hit Hit) String() string { return hit.kind + " in " + hit.file }
 
 // the patterns avoid matching this source when a tree is swept.
 var (
@@ -49,17 +61,19 @@ func bare(text string) bool {
 	return uuids.MatchString(links.ReplaceAllString(text, ""))
 }
 
+// every is the count regexp has defined as all the matches there are.
+const every = -1
+
 // mailed checks if text has a non-reserved email.
 func mailed(text string) bool {
-	for _, at := range emails.FindAllStringIndex(text, -1) {
-		m := text[at[0]:at[1]]
-		if reserved.MatchString(m) {
+	for _, address := range emails.FindAllString(text, every) {
+		if reserved.MatchString(address) {
 			continue
 		}
 		// git@host:path is a remote, not an address. the colon after
 		// the host tells them apart.
-		if strings.HasPrefix(m, "git@") && at[1] < len(text) &&
-			text[at[1]] == ':' {
+		if strings.HasPrefix(address, "git@") &&
+			strings.Contains(text, address+":") {
 			continue
 		}
 		return true
@@ -67,41 +81,53 @@ func mailed(text string) bool {
 	return false
 }
 
-// Words reads the never-words list. ignores blanks and # lines. returns empty
-// if file missing.
-func Words(path string) []string {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
+// Words reads the never-words list. It takes a word to a line and passes
+// over blanks and lines that begin with a hash. Lines are read whole at
+// any length.
+//
+// Lists that are not there are no list: no words and no error. Lists
+// that are there and cannot be read to their end are an error and no
+// words.
+func Words(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
-	defer f.Close()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
 	var out []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		w := strings.TrimSpace(sc.Text())
-		if w != "" && !strings.HasPrefix(w, "#") {
-			out = append(out, w)
+	reader := bufio.NewReader(file)
+	for {
+		line, err := reader.ReadString('\n')
+		word := strings.TrimSpace(line)
+		if word != "" && !strings.HasPrefix(word, "#") {
+			out = append(out, word)
+		}
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
-	return out
 }
 
 // History sweeps a revision's commit messages for attribution trailers.
-func History(r repo.Repo, rev string) ([]Hit, error) {
-	log, err := r.Git("log", rev, "--format=%B")
+func History(here repo.Repo, rev string) ([]Hit, error) {
+	log, err := here.Git("log", rev, "--format=%B")
 	if err != nil {
 		return nil, err
 	}
 	if trailers.MatchString(log) {
-		return []Hit{
-			{Kind: "attribution trailers", File: "(history)"},
-		}, nil
+		return []Hit{Found("attribution trailers", "(history)")}, nil
 	}
 	return nil, nil
 }
 
-// allowSaid maps game terms to hit kinds.
-// two are prefixes, because the hit names the word or the author found.
+// allowSaid maps game terms to hit kinds. word and author are prefixes,
+// since the hit kind ends with the word or name found.
 var allowSaid = map[string]string{
 	"paths":    "machine paths",
 	"sessions": "session urls",
@@ -111,9 +137,9 @@ var allowSaid = map[string]string{
 	"word":     "listed word ",
 }
 
-// Allowed checks if a file and kind are permitted by the .game config.
-// it allows specific kinds in specific files. anything else is blocked.
-func Allowed(allow map[string][]string, file, kind string) bool {
+// allowed says whether the .game config permits a hit kind in a file.
+// anything not listed is blocked.
+func allowed(allow map[string][]string, file, kind string) bool {
 	for _, said := range allow[file] {
 		want, ok := allowSaid[said]
 		if !ok {
@@ -132,102 +158,151 @@ func Allowed(allow map[string][]string, file, kind string) bool {
 	return false
 }
 
-// Tree sweeps every tracked file at rev, except under the excluded prefixes.
-// it checks the fixed patterns, the never-words and the author's name when
-// given. allow lets a file carry listed kinds, never a never-word.
+// fixed is the patterns every swept file is held to, by the kind of hit
+// each makes.
+var fixed = []struct {
+	kind  string
+	found func(string) bool
+}{
+	{"session urls", urls.MatchString},
+	{"uuids", bare},
+	{"machine paths", paths.MatchString},
+	{"email addresses", mailed},
+}
+
+// Tree sweeps every tracked file at rev, except under the excluded
+// prefixes, for the fixed patterns, the never-words and the author's
+// name when given. allow lets a file carry listed kinds, never a
+// never-word.
 func Tree(
-	r repo.Repo,
+	here repo.Repo,
 	rev string,
 	never Never,
 	author string,
 	allow map[string][]string,
 	exclude ...string,
 ) ([]Hit, error) {
-	files, err := r.Files(rev, exclude...)
-	if err != nil {
-		return nil, err
-	}
-	var authorRe *regexp.Regexp
+	sweeping := &sweeping{never: never, author: author, allow: allow}
 	if author != "" {
-		authorRe = regexp.MustCompile(
+		sweeping.authorRe = regexp.MustCompile(
 			`(?i)\b` + regexp.QuoteMeta(author) + `\b`,
 		)
 	}
-	var hits []Hit
-	for _, f := range files {
-		body, err := r.Show(rev, f)
-		if err != nil {
-			return nil, err
-		}
-		if !utf8ish(body) {
-			continue
-		}
-		for _, p := range []struct {
-			kind  string
-			found func(string) bool
-		}{
-			{"session urls", urls.MatchString},
-			{"uuids", bare},
-			{"machine paths", paths.MatchString},
-			{"email addresses", mailed},
-		} {
-			if p.found(body) && !Allowed(allow, f, p.kind) {
-				hits = append(hits, Hit{p.kind, f})
-			}
-		}
-		if never.found(body) {
-			hits = append(hits, Hit{NeverWord, f})
-		}
-		// a licence file may name the author.
-		if authorRe != nil && !isLicence(f) &&
-			authorRe.MatchString(body) &&
-			!Allowed(allow, f, "the author "+author) {
-			hits = append(hits, Hit{"the author " + author, f})
-		}
+	if err := here.Blobs(rev, exclude, sweeping.file); err != nil {
+		return nil, err
 	}
-	return hits, nil
+	return sweeping.hits, nil
 }
 
-// isLicence is whether a path is a file called `LICENSE`, `LICENCE` or
-// `COPYING`, in any case, with any extension, at any depth.
-func isLicence(f string) bool {
-	base := strings.ToUpper(path.Base(f))
-	if i := strings.IndexByte(base, '.'); i >= 0 {
-		base = base[:i]
+// sweeping is one sweep of a tree: what it is held to, and what it has
+// found so far.
+type sweeping struct {
+	never    Never
+	author   string
+	authorRe *regexp.Regexp
+	allow    map[string][]string
+	hits     []Hit
+}
+
+// file sweeps one file's name and its body. The body is read as bytes.
+func (sweep *sweeping) file(file, body string) error {
+	named := nameHits(file, sweep.never, sweep.author, sweep.authorRe)
+	sweep.hits = append(sweep.hits, named...)
+	found := fileHits(file, readable(body), sweep.never, sweep.author,
+		sweep.authorRe, sweep.allow)
+	sweep.hits = append(sweep.hits, found...)
+	return nil
+}
+
+// fileHits lists the hits in one file. a file is hit by each fixed pattern
+// it is not allowed, by a never-word, and by the author's name unless it is a
+// licence or allowed to name them.
+func fileHits(
+	file, body string,
+	never Never,
+	author string,
+	authorRe *regexp.Regexp,
+	allow map[string][]string,
+) []Hit {
+	var hits []Hit
+	for _, pattern := range fixed {
+		if !allowed(allow, file, pattern.kind) && pattern.found(body) {
+			hits = append(hits, Found(pattern.kind, file))
+		}
 	}
+	if never.found(body) {
+		hits = append(hits, Found(neverWord, file))
+	}
+	// a licence file may name the author.
+	if authorRe != nil && !isLicence(file) &&
+		authorRe.MatchString(body) &&
+		!allowed(allow, file, "the author "+author) {
+		hits = append(hits, Found("the author "+author, file))
+	}
+	return hits
+}
+
+// isLicence says whether a path is a file called license, licence or
+// copying, in any case, with any extension, at any depth.
+func isLicence(file string) bool {
+	base := strings.ToUpper(path.Base(file))
+	base, _, _ = strings.Cut(base, ".")
 	return base == "LICENSE" || base == "LICENCE" || base == "COPYING"
 }
 
-// utf8ish is a cheap "is this text": no NUL in the first kilobyte.
-func utf8ish(s string) bool {
-	head := s
-	if len(head) > 1024 {
-		head = head[:1024]
+// readable is the text of a file to look in. Files with a nul in them are
+// given again with the nuls taken out. That finds text written two bytes
+// to a letter. Compressed data is not understood. It is not certified.
+func readable(body string) string {
+	if !strings.ContainsRune(body, nul) {
+		return body
 	}
-	return !strings.ContainsRune(head, 0)
+	return body + "\n" + strings.ReplaceAll(body, "\x00", "")
 }
 
-// Text sweeps one piece of prose, a commit subject say, for the fixed
-// patterns, attribution trailers and the never-words. hits name label as
-// their file.
-func Text(label, text string, never Never) []Hit {
+// nul is the byte text never holds, defined as zero.
+const nul = 0
+
+// separators turns the marks that join words in a file's name into
+// spaces. The author's name is then found in ada-lovelace.md.
+var separators = strings.NewReplacer("-", " ", "_", " ", ".", " ", "/", " ")
+
+// inName is added to the kind of a hit in a file's name.
+const inName = " (name)"
+
+// sessionNames is the session id pattern for names. It is the word then
+// an underscore then eight hex digits. Names that go on in words are not
+// one.
+var sessionNames = regexp.MustCompile("sess" + "ion_[0-9a-f]{8}")
+
+// inNames is the fixed patterns a file's name is held to. Addresses and
+// machine paths are left out. Asset names for high density screens have
+// the shape of an address. Every path is made of paths.
+var inNames = []struct {
+	kind  string
+	found func(string) bool
+}{
+	{"session urls", sessionNames.MatchString},
+	{"uuids", bare},
+}
+
+// nameHits lists the hits in a file's name. The kinds are the body's with
+// (name) added. No allowance applies.
+func nameHits(
+	file string, never Never, author string, authorRe *regexp.Regexp,
+) []Hit {
 	var hits []Hit
-	for _, p := range []struct {
-		kind  string
-		found func(string) bool
-	}{
-		{"attribution trailers", trailers.MatchString},
-		{"session urls", urls.MatchString},
-		{"uuids", bare},
-		{"machine paths", paths.MatchString},
-		{"email addresses", mailed},
-	} {
-		if p.found(text) {
-			hits = append(hits, Hit{p.kind, label})
+	for _, pattern := range inNames {
+		if pattern.found(file) {
+			hits = append(hits, Found(pattern.kind+inName, file))
 		}
 	}
-	if never.found(text) {
-		hits = append(hits, Hit{NeverWord, label})
+	if never.found(file) {
+		hits = append(hits, Found(neverWord+inName, file))
+	}
+	if authorRe != nil && authorRe.MatchString(separators.Replace(file)) {
+		kind := "the author " + author + inName
+		hits = append(hits, Found(kind, file))
 	}
 	return hits
 }

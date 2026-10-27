@@ -1,0 +1,10 @@
+# numbers.yaml: the numbers release's tests are held to, by name
+# (ruling 4, 2026-10-18: a test's numbers live in a config, and
+# the test is held to it).
+
+numbers:
+  - name: second-release-commits
+    value: 2
+    says: the commits on dist after a changed tree is released again, the first release and the second parented on it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written

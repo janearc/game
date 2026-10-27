@@ -40,8 +40,8 @@ binary was built from, and how long ago that was.
 ## this tree is unsanitary!
 
 agents commit constantly. that's fine, because their commits go to the
-road, a private remote. the dist, the copy people outside see, only ever
-gets one flat commit.
+road, a private remote, and the road is dirty on purpose. the dist, the
+copy people outside see, only ever gets one flat commit.
 
 before that commit goes out, game sweeps it for what agents leak without
 noticing: attribution trailers, session urls, file paths from this
@@ -50,8 +50,12 @@ those names only as hashes, so the game binary contains none of them.
 
 ## make is a terrible linter, we can do better.
 
-game's lint checks prose the way gofmt checks spacing. it flags shouting,
-exclamation marks, and the words agents overuse. `game bounce` holds any
+game's lint checks prose the way gofmt checks spacing. it flags
+shouting, exclamation marks, the words agents overuse, and the four
+habits of a comment that is not plain: chained clauses, too many
+commas, an opening a or an, and a comment telling the code's past.
+
+a line that says noqa is let off every rule. `game bounce` holds any
 change that mentions the repository's author in the third person until
 she approves it.
 
@@ -74,14 +78,44 @@ the verbs a go project needs that go itself does not know it needs.
 all you need is `sh bootstrap.sh install` once, then game builds game.
 
     game check    gofmt, vet and the tests, exit code kept
+    game mutants  the mutation run: the source changed one thing at a time,
+                  the tests run against each; what survives is listed, and
+                  .mutants names the changes that make no difference.
+                  each survivor and each timeout is printed on its own
+                  line the moment it is decided, in the form of the
+                  report (`survived   file:line name`), so a long run
+                  can be fixed while it runs; a saved copy of those
+                  lines goes to `--again`. the tally at the end names
+                  them again.
+                  SIGINT or SIGTERM stops the run, which still writes
+                  --report (a first line says it is partial and how many
+                  mutants were not reached), tells its tally, and exits
+                  nonzero. `--timeout` must be at least twice the time the
+                  unchanged suite takes; with less, the run refuses to
+                  start and says the suite's time and the timeout to give.
+                  the copies of the tree are made in `$TMPDIR` when that is
+                  a folder outside /var/folders, and otherwise in
+                  game/mutants in your user cache folder
+                  (~/Library/Caches on macOS), because Xcode does not
+                  measure coverage on sources under /var/folders. they are
+                  removed when the run ends, stopped or not
     game build    every cmd/* into bin/, stamped; `build NAME` a target,
                   `build stack` a whole stack, `build docker` an image
     game lint     whatever lint your config describes, counted; zero of
-                  it is what a release asks for
+                  it is what a release asks for. `lint harden` in .game
+                  holds the tree to the harden rule below, and a release
+                  refuses what fails it, as it refuses the lint
+    game harden   source, binaries and modules held to the hardened
+                  default; `harden xcode -scheme S` adds build settings
+    game aslr     build, then check the binaries are position-independent
+                  (c, xcode, go; no word checks every Mach-O in bin/)
+    game leaks    build and run under the address sanitizer, then under
+                  leaks (c, xcode, go) to find what was left behind
     game release  one flat commit: the whole tree, none of the road,
                   swept and proven. `release push TAG` is the only thing
                   that reaches the clean remote
     game trees    this project's two remotes, if it has any
+    game history  the last release and three commits; `game who` also works
     game run      a described run, in your terminal, tmux dropped
     game clean    go clean, and bin/ away; --cache for a cold run
     game bounce   linting for first person; the third person signs off
@@ -90,7 +124,21 @@ all you need is `sh bootstrap.sh install` once, then game builds game.
     game stick    claims this repository for a pairing session; sticky
                   follows the claim's tip, unstick lets it go clean
 
+game build stamps four strings into each command's main package, for
+its `--age` and `--who`:
+
+    main.build         the commit, short, with -dirty when the tree is
+    main.built         that commit's time
+    main.stampedWho    the session and machine that built it, jm/4b732342 on
+                       loft, or no session on loft when the environment held
+                       no session id, or none shaped like one
+    main.stampedSids   the last three session lines that end the commits
+                       behind it: what the messages say, not a signature
+
+older commands read main.who and main.sids; game stamps both names with
+the same two values.
+
 settings: `~/.config/game/config`, a block per project, then `.game`,
 which names its project. `example/config` is a start.
 
-game. just too stupid not to be pretty.
+game. too stupid not to be pretty.

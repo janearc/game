@@ -1,0 +1,214 @@
+# numbers.yaml: the numbers the verbs' tests are held to, by name
+# (ruling 4, 2026-10-18: a test's numbers live in a config, and
+# the test is held to it).
+
+numbers:
+  - name: lint-width
+    value: 80
+    says: the width the lint asks of everything, as the tree's own .game holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the rule was written
+
+  - name: hook-budget-chars
+    value: 10000
+    says: the most characters a hook delivers whole, the budget help-claude fits in
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: leaks-asks-before-leaks
+    value: 3
+    says: the asks a leaks run makes before leaks itself, the sdk, the sanitizer build, and its run
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: release-check-asks
+    value: 4
+    says: the asks a release check makes, go env, gofmt, vet, and the test
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: linted-wide-lines
+    value: 3
+    says: the wide lines in the linted fixture, the comment and the two code lines
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: tail-shown-from
+    value: 9
+    says: the first line of the tail of twelve the failing target shows, from the twenty the step counts to
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: seq-counts-to
+    value: 20
+    says: the number the failing step counts to, so its tail has more lines than the tail shown
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: tail-of-nothing
+    value: 3
+    says: the lines a tail of a missing file is asked for, which is none
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: past-width
+    value: 50
+    says: the width of a line wider than the rule of forty the member-rules test sets
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
+
+  - name: semgrep-finding-line
+    value: 7
+    says: the line the semgrep fixture's finding is on, as its start.line holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: diag-finding-line
+    value: 12
+    says: the line the analyzer fixture's warning is on, as the diagnostic's text holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: gosec-finding-line
+    value: 10
+    says: the line the gosec fixture's issue is on, as its line field holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: govuln-caller-line
+    value: 12
+    says: the line the govulncheck fixture's caller is on, as its position holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: some-workers
+    value: 3
+    says: a worker count past one, so the options say it back
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: bench-workers
+    value: 2
+    says: the workers the bench is estimated at
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: bench-slow-seconds
+    value: 2
+    says: how long the slower suite took in the bench fixture
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: bench-slow-mutants
+    value: 30
+    says: the mutants of the slower suite in the bench fixture
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: bench-fast-mutants
+    value: 10
+    says: the mutants of the faster suite in the bench fixture
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: default-workers
+    value: 2
+    says: the workers a mutants run gets with no flag, as its usage says
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the usage was written
+
+  - name: default-timeout-seconds
+    value: 20
+    says: the seconds a mutant gets with no flag, as the usage says
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the usage was written
+
+  - name: bench-times-workers
+    value: 4
+    says: how many times the asked workers the bench also estimates at, as the bench's tail says
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the bench was written
+
+  - name: cheap-seconds
+    value: 4
+    says: how long the cheap suite took, slow but with few mutants
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: cheap-mutants
+    value: 2
+    says: the cheap suite's mutants
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: middling-seconds
+    value: 3
+    says: how long the middling suite took
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: middling-mutants
+    value: 5
+    says: the middling suite's mutants
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-sources
+    value: 5
+    says: the most sources a drawn build-c argv holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: fuzz-c-steps
+    value: 3
+    says: the calls a fuzz or race of c makes, the sdk, the build and the run
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the verb was written
+
+  - name: some-checks
+    value: 5
+    says: a rapid checks count the tests give, past one so it is seen in the go test line
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: listed-and-two-groups
+    value: 3
+    says: the asks a split test run makes, the listing and the two groups
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the split was written
+
+  - name: drawn-most-files
+    value: 6
+    says: the most files a drawn coverage report holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-statements
+    value: 50
+    says: the most statements a drawn file holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: cover-c-steps
+    value: 4
+    says: the calls a c coverage run makes, the build, the run, the merge and the export
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the verb was written
+
+  - name: cover-xcode-steps
+    value: 2
+    says: the calls an xcode coverage run makes, the test run and xccov
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the verb was written
+
+  - name: drawn-most-test-words
+    value: 4
+    says: the most words a drawn test command holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: some-findings
+    value: 3
+    says: the lint findings a stand-in member reports, more than none
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a

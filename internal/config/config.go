@@ -1,7 +1,7 @@
 // Package config reads game's settings.
 //
-// there are two files: the dotfile in your home directory, then .game in the
-// repository, which is read second and wins.
+// there are two files. the dotfile in your home directory is read first, then
+// .game in the repository, which is read second and wins.
 //
 // each line is "key value" or "key = value". # starts a comment and ~ is
 // home. a "project NAME" line opens a block of indented lines.
@@ -14,49 +14,126 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"github.com/janearc/game/internal/count"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-// Config is every setting game knows.
+// Config is every setting game knows. Load reads it from your dotfile
+// and the repository's .game; each setting is asked for by a method.
 type Config struct {
 	// the name the bounce refuses in the third person
-	Author   string
-	Words    string             // the sweep's word list, one per line
-	Name     string             // the project, from .game's name line
-	Projects map[string]Project // yours, one block per project
-	// Named is the project's name as game uses it. Load sets it, and
-	// NamedBy says where it came from, in words a message can carry.
-	Named   string
-	NamedBy string
-	// Dotfile is the path of the config that was read, so a message can
-	// name it.
-	Dotfile string
-	Exclude []string // path prefixes the sweep leaves alone
-	// Omit is files that stay on the road and are left out of every
-	// release. exclude only limits what the sweep scans.
-	Omit []string
-	// SweepAllow is, per file, the kinds of sweep hit the repository
-	// means to carry. a real leak of another kind in the same file is
-	// still found.
-	SweepAllow map[string][]string
-	// License is a path to the one license every release carries. it
+	author   string
+	words    string             // the sweep's word list, one per line
+	name     string             // the project, from .game's name line
+	projects map[string]Project // yours, one block per project
+	// named is the project's name. Load sets it, and namedBy says where it
+	// came from.
+	named   string
+	namedBy string
+	// dotfile is the path of the config that was read.
+	dotfile string
+	exclude []string // path prefixes the sweep leaves alone
+	// omit is files and directories left out of every release. exclude
+	// only limits what the sweep scans.
+	omit []string
+	// sweepAllow is, per file, the kinds of sweep hit the repository means
+	// to carry. other kinds in the same file are still found.
+	sweepAllow map[string][]string
+	// license is a path to the one license every release carries. it
 	// lives in your config, not in a repository.
-	License string
+	license string
 	// the lint, as described; none described is no lint
-	Lint    []Rule
-	Targets []Target // builds described beyond go's own, by name
+	lint    []Rule
+	targets []Target // builds described beyond go's own, by name
 	// things to run, described the same way: run NAME DIR :: CMD
-	Runs []Target
+	runs []Target
 	// settings the repository needs, declared in .game
-	Needs []Need
-	Stack [][2]string // a stack's members, name and ref, in order
+	needs []Need
+	stack []Member // a stack's members, name and ref, in order
+	// patches is the directories, in the repository, where the stack keeps
+	// members' patches beside patches/: NAME under each, from .game only
+	patches []string
+	// theirs is the members marked theirs: someone else's code, whose
+	// addresses, urls, uuids and paths a release does not hold against it
+	theirs []string
 	// your values, from the dotfile only
-	Set map[string]string
+	set map[string]string
+	// rapidChecks is how many checks a property test runs under game
+	// check. zero keeps the library's own default.
+	rapidChecks int
 }
+
+// Author is the name the bounce refuses in the third person.
+func (cfg Config) Author() string { return cfg.author }
+
+// Words is the path of the sweep's word list, one word per line.
+func (cfg Config) Words() string { return cfg.words }
+
+// Named is the project's name as Load settled it.
+func (cfg Config) Named() string { return cfg.named }
+
+// Dotfile is the path of the config that was read.
+func (cfg Config) Dotfile() string { return cfg.dotfile }
+
+// Exclude is the path prefixes the sweep leaves alone.
+func (cfg Config) Exclude() []string { return cfg.exclude }
+
+// Omit is the files and directories left out of every release.
+func (cfg Config) Omit() []string { return cfg.omit }
+
+// SweepAllow is, per file, the kinds of sweep hit the repository means
+// to carry.
+func (cfg Config) SweepAllow() map[string][]string { return cfg.sweepAllow }
+
+// License is the path of the one license every release carries.
+func (cfg Config) License() string { return cfg.license }
+
+// Lint is the lint as described; none described is no lint.
+func (cfg Config) Lint() []Rule { return cfg.lint }
+
+// Targets is the builds described beyond go's own, by name.
+func (cfg Config) Targets() []Target { return cfg.targets }
+
+// Runs is the things to run, described as targets are.
+func (cfg Config) Runs() []Target { return cfg.runs }
+
+// Needs is the settings the repository declares it needs.
+func (cfg Config) Needs() []Need { return cfg.needs }
+
+// Stack is a stack's members, name and ref, in order.
+func (cfg Config) Stack() []Member { return cfg.stack }
+
+// Member is one member of a stack as .game names it: the repository
+// and the tag or branch to take.
+type Member struct {
+	name string
+	ref  string
+}
+
+// Name is the member's name, which is the directory it is laid in.
+func (member Member) Name() string { return member.name }
+
+// Ref is the tag or branch to take.
+func (member Member) Ref() string { return member.ref }
+
+// Patches is the directories where the stack keeps members' patches
+// beside patches/.
+func (cfg Config) Patches() []string { return cfg.patches }
+
+// Theirs is the members marked theirs.
+func (cfg Config) Theirs() []string { return cfg.theirs }
+
+// Set is your values, from the dotfile only.
+func (cfg Config) Set() map[string]string { return cfg.set }
+
+// RapidChecks is how many checks a property test runs under game
+// check; zero keeps the library's own default.
+func (cfg Config) RapidChecks() int { return cfg.rapidChecks }
 
 // Project is one project's block in your dotfile: its two remotes and the
 // values it is given.
@@ -74,15 +151,21 @@ type Config struct {
 // The repository says which block is its own, with name in .game, and
 // nothing in the repository ever holds a remote or a value.
 type Project struct {
-	// Road is the dirty remote, which takes every commit: game push.
-	Road string
+	// road is the dirty remote, which takes every commit: game push.
+	road string
 
-	// Dist is the clean remote, which only game release push sends to.
-	Dist string
+	// dist is the clean remote, which only game release push sends to.
+	dist string
 
-	// Set is the values this project is given, over the dotfile's.
-	Set map[string]string
+	// set is the values this project is given, over the dotfile's.
+	set map[string]string
 }
+
+// Road is the dirty remote, which takes every commit.
+func (project Project) Road() string { return project.road }
+
+// Dist is the clean remote, which only a release push sends to.
+func (project Project) Dist() string { return project.dist }
 
 // Need is a setting a repository declares it needs, and why. if you
 // haven't set it, game tells you what to set before anything runs. the
@@ -90,9 +173,15 @@ type Project struct {
 //
 //	needs CONTACT a name and email the data providers can reach
 type Need struct {
-	Name string
-	Why  string
+	name string
+	why  string
 }
+
+// Name is the setting needed.
+func (need Need) Name() string { return need.name }
+
+// Why is why the repository needs it.
+func (need Need) Why() string { return need.why }
 
 // Target is a build, or a run, described in the config: a name, the
 // directory each step runs in, and the steps in order, one per line:
@@ -104,15 +193,27 @@ type Need struct {
 // under nice so the rest of the machine keeps its share, with the
 // output kept in bin/NAME.log.
 type Target struct {
-	Name  string
-	Steps []Step
+	name  string
+	steps []Step
 }
+
+// Name is the target's name.
+func (target Target) Name() string { return target.name }
+
+// Steps is the target's steps, in order.
+func (target Target) Steps() []Step { return target.steps }
 
 // Step is one line of a target: where it runs, and what.
 type Step struct {
-	Dir  string
-	Args []string
+	dir  string
+	args []string
 }
+
+// Dir is where the step runs.
+func (step Step) Dir() string { return step.dir }
+
+// Args is what the step runs: the program and its arguments.
+func (step Step) Args() []string { return step.args }
 
 // Rule is one line of lint: a name and its arguments. game knows a
 // fixed set of names; what they are set to is whoever's lint this is.
@@ -124,135 +225,157 @@ type Step struct {
 //	lint print             no fmt.Print outside package main
 //	lint exclaim           no exclamation marks in docs
 //	lint shout             capitals of five or more in comments, counted
+//	lint harden            privilege and unsafe file handling reported;
+//	                       release and verify refuse a harden finding
 //	lint words a b c       words banned from code and docs
 //	lint allow FILE name   that one file is not held to that one rule
 type Rule struct {
-	Name string
-	Args []string
+	name string
+	args []string
 }
 
-// numeric is the lint rules that take a number. for these the smaller number
-// is the stricter.
-var numeric = map[string]bool{"width": true, "rows": true, "paragraph": true}
+// Ruled is one rule of lint by its name and arguments, as a lint line
+// describes it.
+func Ruled(name string, args ...string) Rule {
+	return Rule{name: name, args: args}
+}
 
-// Strictest combines every member's lint rules into the strictest set. a
-// number is the smallest any member asks for, word lists are merged, and a
-// rule without arguments is on if any member has it. allowances are kept
-// per file and merged.
+// Name is the rule's name.
+func (rule Rule) Name() string { return rule.name }
+
+// Args is the rule's arguments.
+func (rule Rule) Args() []string { return rule.args }
+
+// the places a line's words are read at, defined by the lines that
+// take them: the first word, the second and the third.
+const (
+	first  = 0 // defined by go: a list begins at nothing
+	second = 1 // defined: one past the first
+	third  = 2 // defined: one past the second
+)
+
+// numeric is the lint rules that take a number. the smaller is stricter.
+var numeric = map[string]bool{
+	"width": true, "rows": true, "paragraph": true, "commas": true,
+}
+
+// Strictest combines lint rules into the strictest set. numbers are
+// the smallest from any member. word lists are merged. rules without
+// arguments are on if any member has them. allowances are merged per
+// file.
 func Strictest(sets ...[]Rule) []Rule {
 	var order []string
 	held := map[string]Rule{}
 	for _, set := range sets {
-		for _, r := range set {
-			key := r.Name
-			if r.Name == "allow" && len(r.Args) > 0 {
-				key = "allow " + r.Args[0]
+		for _, rule := range set {
+			key := rule.name
+			allowing := rule.name == "allow" &&
+				count.Positive(len(rule.args))
+			if allowing {
+				key = "allow " + rule.args[first]
 			}
 			was, seen := held[key]
 			if !seen {
 				order = append(order, key)
-				held[key] = r
+				held[key] = rule
 				continue
 			}
 			switch {
-			case numeric[r.Name]:
-				if less(r.Args, was.Args) {
-					held[key] = r
+			case numeric[rule.name]:
+				if less(rule.args, was.args) {
+					held[key] = rule
 				}
-			case r.Name == "words":
+			case rule.name == "words":
 				held[key] = Rule{
-					Name: r.Name,
-					Args: union(was.Args, r.Args),
+					name: rule.name,
+					args: union(was.args, rule.args),
 				}
-			case r.Name == "allow":
+			case rule.name == "allow":
+				file := rule.args[first]
+				lints := union(was.args[second:],
+					rule.args[second:])
 				held[key] = Rule{
-					Name: r.Name,
-					Args: append(
-						[]string{r.Args[0]},
-						union(
-							was.Args[1:],
-							r.Args[1:],
-						)...,
-					),
+					name: rule.name,
+					args: append([]string{file}, lints...),
 				}
 			}
 		}
 	}
-	out := make([]Rule, 0, len(order))
+	out := make([]Rule, count.Nothing, len(order))
 	for _, name := range order {
 		out = append(out, held[name])
 	}
 	return out
 }
 
-// less checks if one rule's number is smaller than another's.
-// a rule with no number cannot be stricter.
-func less(a, b []string) bool {
-	if len(a) == 0 || len(b) == 0 {
+// less checks if one rule's number is smaller than another's. it is false
+// when either has no number.
+func less(one, other []string) bool {
+	if count.None(len(one)) || count.None(len(other)) {
 		return false
 	}
-	x, err := strconv.Atoi(a[0])
+	x, err := strconv.Atoi(one[first])
 	if err != nil {
 		return false
 	}
-	y, err := strconv.Atoi(b[0])
+	y, err := strconv.Atoi(other[first])
 	if err != nil {
 		return false
 	}
 	return x < y
 }
 
-// allowance is one "lint allow FILE name..." line.
-// an exemption names a file and a rule. a rule alone is not allowed.
-func allowance(path string, n int, f []string) (Rule, error) {
-	if len(f) < 3 {
+// allowWords is the fewest words a lint allow line has: allow, the
+// file and one lint, as the line is defined.
+const allowWords = 3
+
+// allowance is one "lint allow FILE name..." line. it needs a file and at
+// least one lint.
+func allowance(path string, at int, words []string) (Rule, error) {
+	if len(words) < allowWords {
 		return Rule{}, fmt.Errorf(
 			"%s:%d: lint allow wants a file and a lint, as in "+
 				"\"lint allow OPERATION.md paragraph\"",
 			path,
-			n,
+			at,
 		)
 	}
-	for _, name := range f[2:] {
-		known := false
-		for _, r := range Rules {
-			known = known || r == name
-		}
-		if !known {
+	for _, name := range words[third:] {
+		if !slices.Contains(rules, name) {
 			return Rule{}, fmt.Errorf(
 				"%s:%d: unknown lint %q; the lints are %s",
 				path,
-				n,
+				at,
 				name,
-				strings.Join(Rules, ", "),
+				strings.Join(rules, ", "),
 			)
 		}
 	}
-	return Rule{Name: "allow", Args: f[1:]}, nil
+	return Rule{name: "allow", args: words[second:]}, nil
 }
 
-// union is every word in either list, once, in the order first seen.
-func union(a, b []string) []string {
+// union is every word from both lists, once, in first seen order.
+func union(one, other []string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, list := range [][]string{a, b} {
-		for _, w := range list {
-			if !seen[w] {
-				seen[w] = true
-				out = append(out, w)
+	for _, list := range [][]string{one, other} {
+		for _, word := range list {
+			if !seen[word] {
+				seen[word] = true
+				out = append(out, word)
 			}
 		}
 	}
 	return out
 }
 
-// SweepKinds are the kinds of sweep hit a .game may declare it carries.
-var SweepKinds = []string{
+// sweepKinds are the kinds of sweep hit a .game may declare it carries.
+var sweepKinds = []string{
 	"paths", "sessions", "uuids", "emails", "author", "word",
 }
 
-// Keys is what a file may say. an unknown key is an error.
-var Keys = []string{
+// keys is what a file may say. unknown keys are errors.
+var keys = []string{
 	"author",
 	"words",
 	"name",
@@ -267,10 +390,12 @@ var Keys = []string{
 	"needs",
 	"set",
 	"stack",
+	"patches",
+	"rapid",
 }
 
-// Rules is the lint names game knows.
-var Rules = []string{
+// rules is the lint names game knows.
+var rules = []string{
 	"width",
 	"rows",
 	"paragraph",
@@ -279,12 +404,17 @@ var Rules = []string{
 	"exclaim",
 	"shout",
 	"words",
+	"chain",
+	"commas",
+	"opener",
+	"history",
+	"harden",
 }
 
-// Defaults is a config for a repository with no files at all.
-func Defaults(home, repo string) Config {
+// defaults is a config for a repository with no files at all.
+func defaults(home, repo string) Config {
 	return Config{
-		Words: filepath.Join(home, ".config", "game", "sweep.words"),
+		words: filepath.Join(home, ".config", "game", "sweep.words"),
 	}
 }
 
@@ -292,43 +422,45 @@ func Defaults(home, repo string) Config {
 // repository's .game. a missing file is skipped and a malformed one is an
 // error.
 //
-// ~ expands against home, which is not always whose: an agent's config is in
-// its anchor, and ~ in it is still this machine's user.
+// ~ expands against home, which is not always whose.
 //
 // lint lines in the repository replace the dotfile's. the dotfile's lint is
 // used when the repository has none.
 func Load(whose, home, repo string) (Config, error) {
-	c := Defaults(home, repo)
+	cfg := defaults(home, repo)
 	dotfile := filepath.Join(whose, ".config", "game", "config")
-	if err := c.fold(dotfile, home, true); err != nil {
-		return c, err
+	if err := cfg.fold(dotfile, home, true); err != nil {
+		return cfg, err
 	}
-	mine := c.Lint
-	c.Lint = nil
-	if err := c.fold(
+	mine := cfg.lint
+	cfg.lint = nil
+	if err := cfg.fold(
 		filepath.Join(repo, ".game"), home, false,
 	); err != nil {
-		return c, err
+		return cfg, err
 	}
-	if len(c.Lint) == 0 {
-		c.Lint = mine
+	if err := cfg.patchesBesideMembers(); err != nil {
+		return cfg, err
 	}
-	c.Dotfile = dotfile
-	c.Named, c.NamedBy = named(c.Name, repo)
-	for name, value := range c.Projects[c.Named].Set {
-		if c.Set == nil {
-			c.Set = map[string]string{}
+	if count.None(len(cfg.lint)) {
+		cfg.lint = mine
+	}
+	cfg.dotfile = dotfile
+	cfg.named, cfg.namedBy = named(cfg.name, repo)
+	for name, value := range cfg.projects[cfg.named].set {
+		if cfg.set == nil {
+			cfg.set = map[string]string{}
 		}
-		c.Set[name] = value
+		cfg.set[name] = value
 	}
-	return c, nil
+	return cfg, nil
 }
 
 // Mine is the block for the project the repository says it is, and whether
 // there is one. a project with no block is a local build.
-func (c Config) Mine() (Project, bool) {
-	p, held := c.Projects[c.Named]
-	return p, held
+func (cfg Config) Mine() (Project, bool) {
+	project, held := cfg.projects[cfg.named]
+	return project, held
 }
 
 // named returns the tree's name and where it came from. the name line in
@@ -346,11 +478,11 @@ func named(fromGame, repo string) (name, by string) {
 
 // module is the path a tree's go.mod declares, or empty without one.
 func module(repo string) string {
-	b, err := os.ReadFile(filepath.Join(repo, "go.mod"))
+	body, err := os.ReadFile(filepath.Join(repo, "go.mod"))
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(b), "\n") {
+	for _, line := range strings.Split(string(body), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "module ") {
 			return strings.TrimSpace(
@@ -361,14 +493,15 @@ func module(repo string) string {
 	return ""
 }
 
-// last is the project name from a module path. a major version suffix
-// is go's, not the project's: example/v2 is example.
+// last is the project name from a module path. example/v2 is example.
 func last(mod string) string {
 	parts := strings.Split(strings.Trim(mod, "/"), "/")
-	name := parts[len(parts)-1]
-	if len(parts) > 1 && len(name) > 1 && name[0] == 'v' {
-		if _, err := strconv.Atoi(name[1:]); err == nil {
-			name = parts[len(parts)-2]
+	name := parts[count.Last(len(parts))]
+	if digits, versioned := strings.CutPrefix(name, "v"); versioned &&
+		len(parts) > count.One && digits != "" {
+		if _, err := strconv.Atoi(digits); err == nil {
+			last := count.Last(len(parts))
+			name = parts[count.Last(last)]
 		}
 	}
 	return name
@@ -377,33 +510,33 @@ func last(mod string) string {
 // NoBlock is the refusal when a tree has no block. it shows the name
 // looked for, where it came from, which file was read, and the blocks
 // that file does have.
-func (c Config) NoBlock() error {
-	blocks := make([]string, 0, len(c.Projects))
-	for name := range c.Projects {
+func (cfg Config) NoBlock() error {
+	blocks := make([]string, count.Nothing, len(cfg.projects))
+	for name := range cfg.projects {
 		blocks = append(blocks, name)
 	}
 	sort.Strings(blocks)
 	has := "it has no project blocks at all"
-	if len(blocks) > 0 {
+	if count.Positive(len(blocks)) {
 		has = "its project blocks are " + strings.Join(blocks, ", ")
 	}
 	return fmt.Errorf(
 		"no project block for %s in %s; the name is from %s, and %s. "+
 			"open a \"project %s\" block there to give it a road "+
 			"and a dist",
-		c.Named, c.Dotfile, c.NamedBy, has, c.Named,
+		cfg.named, cfg.dotfile, cfg.namedBy, has, cfg.named,
 	)
 }
 
 // Remotes maps each project's name to its dist when clean is true, and to its
 // road otherwise. projects with none are left out.
-func (c Config) Remotes(clean bool) map[string]string {
+func (cfg Config) Remotes(clean bool) map[string]string {
 	out := map[string]string{}
-	for name, p := range c.Projects {
-		if url := p.Road; !clean && url != "" {
+	for name, project := range cfg.projects {
+		if url := project.road; !clean && url != "" {
 			out[name] = url
 		}
-		if url := p.Dist; clean && url != "" {
+		if url := project.dist; clean && url != "" {
 			out[name] = url
 		}
 	}
@@ -412,388 +545,556 @@ func (c Config) Remotes(clean bool) map[string]string {
 
 // fold reads a file into the config. words means this is your dotfile,
 // which sets the word list and values. only a repository declares needs.
-func (c *Config) fold(path, home string, words bool) error {
-	f, err := os.Open(path)
+func (cfg *Config) fold(path, home string, words bool) error {
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	defer f.Close()
-	return c.Parse(f, path, home, words)
+	defer file.Close()
+	return cfg.Parse(file, path, home, words)
+}
+
+// a line is one setting as Parse found it, with its file and number, the
+// project block it is in, whether this is the dotfile, and the home for ~.
+type line struct {
+	path  string
+	at    int
+	open  string
+	words bool
+	home  string
+}
+
+// errorf is an error at this line, named file:line first.
+func (at line) errorf(format string, args ...any) error {
+	return fmt.Errorf(
+		"%s:%d: "+format,
+		append([]any{at.path, at.at}, args...)...,
+	)
+}
+
+// a setter reads one key's value into the config.
+type setter func(cfg *Config, at line, key, val string) error
+
+// setters is what each key does. project is not here. setLine handles it.
+var setters = map[string]setter{
+	"author":  setAuthor,
+	"license": setLicense,
+	"words":   setWords,
+	"name":    setName,
+	"road":    setRemote,
+	"dist":    setRemote,
+	"public":  setPublic,
+	"exclude": setExclude,
+	"omit":    setOmit,
+	"stack":   setStack,
+	"patches": setPatches,
+	"needs":   setNeeds,
+	"set":     setValue,
+	"target":  setTarget,
+	"run":     setTarget,
+	"sweep":   setSweep,
+	"lint":    setLint,
+	"rapid":   setRapid,
 }
 
 // Parse reads settings from a reader; path names it in errors.
-func (c *Config) Parse(
-	r interface{ Read([]byte) (int, error) },
+func (cfg *Config) Parse(
+	from interface{ Read([]byte) (int, error) },
 	path, home string,
 	words bool,
 ) error {
-	sc := bufio.NewScanner(r)
-	n, open := 0, ""
+	sc := bufio.NewScanner(from)
+	at := line{path: path, words: words, home: home}
 	for sc.Scan() {
-		n++
+		at.at++
 		raw := sc.Text()
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
+		text := strings.TrimSpace(raw)
+		if text == "" || strings.HasPrefix(text, "#") {
 			continue
 		}
 		// a project's lines are indented. the first unindented line
 		// ends the project block.
-		if raw[0] != '\t' && raw[0] != ' ' {
-			open = ""
+		indented := strings.HasPrefix(raw, "\t") ||
+			strings.HasPrefix(raw, " ")
+		if !indented {
+			at.open = ""
 		}
-		key, val, err := split(line)
-		if err != nil {
-			return fmt.Errorf("%s:%d: %v", path, n, err)
-		}
-		val = expand(val, home)
-		if open != "" && key != "road" && key != "dist" &&
-			key != "set" && key != "project" {
-			return fmt.Errorf(
-				"%s:%d: %s is not a project's; a block holds "+
-					"road, dist and set, and %s belongs "+
-					"at the margin",
-				path,
-				n,
-				key,
-				key,
-			)
-		}
-		switch key {
-		case "author":
-			c.Author = val
-		case "license":
-			c.License = val
-		case "words":
-			if words {
-				c.Words = val
-			}
-		case "name":
-			if words {
-				return fmt.Errorf(
-					"%s:%d: name is a "+
-						"repository's; the dotfile "+
-						"names remotes with road "+
-						"and dist",
-					path,
-					n,
-				)
-			}
-			c.Name = val
-		case "project":
-			if !words {
-				return fmt.Errorf(
-					"%s:%d: a project block is the "+
-						"builder's; a repository "+
-						"says which one is its own "+
-						"with name",
-					path,
-					n,
-				)
-			}
-			if val == "" {
-				return fmt.Errorf(
-					"%s:%d: project wants \"project NAME\"",
-					path,
-					n,
-				)
-			}
-			open = val
-			if c.Projects == nil {
-				c.Projects = map[string]Project{}
-			}
-			if _, held := c.Projects[open]; !held {
-				c.Projects[open] = Project{}
-			}
-		case "road", "dist":
-			if !words {
-				return fmt.Errorf(
-					"%s:%d: %s is the builder's, in "+
-						"~/.config/game/config "+
-						"under its project; a "+
-						"repository never holds a "+
-						"remote",
-					path,
-					n,
-					key,
-				)
-			}
-			if open == "" {
-				return fmt.Errorf(
-					"%s:%d: %s sits inside a project "+
-						"block: \"project NAME\", "+
-						"then %s indented under it",
-					path,
-					n,
-					key,
-					key,
-				)
-			}
-			if val == "" {
-				return fmt.Errorf(
-					"%s:%d: %s wants a url",
-					path,
-					n,
-					key,
-				)
-			}
-			if first, _, cut := strings.Cut(val, " "); cut &&
-				first == open {
-				return fmt.Errorf(
-					"%s:%d: the block already names "+
-						"%s; %s takes the url alone",
-					path,
-					n,
-					open,
-					key,
-				)
-			}
-			held := c.Projects[open]
-			if key == "road" {
-				held.Road = val
-			} else {
-				held.Dist = val
-			}
-			c.Projects[open] = held
-		case "public":
-			return fmt.Errorf(
-				"%s:%d: \"public\" is now \"dist\": "+
-					"the clean remote only game release "+
-					"pushes to; the dirty one is "+
-					"\"road\"",
-				path,
-				n,
-			)
-		case "exclude":
-			c.Exclude = append(c.Exclude, val)
-		case "stack":
-			if words {
-				return fmt.Errorf(
-					"%s:%d: a stack is a "+
-						"repository's; the dotfile "+
-						"says where each member "+
-						"lives",
-					path,
-					n,
-				)
-			}
-			name, ref, _ := strings.Cut(val, " ")
-			if strings.TrimSpace(ref) == "" {
-				return fmt.Errorf(
-					"%s:%d: stack wants \"stack NAME REF\"",
-					path,
-					n,
-				)
-			}
-			c.Stack = append(
-				c.Stack,
-				[2]string{name, strings.TrimSpace(ref)},
-			)
-		case "needs":
-			if words {
-				return fmt.Errorf(
-					"%s:%d: needs is a "+
-						"repository's declaration; "+
-						"the dotfile gives values "+
-						"with set",
-					path,
-					n,
-				)
-			}
-			name, why, _ := strings.Cut(val, " ")
-			if strings.TrimSpace(why) == "" {
-				return fmt.Errorf(
-					"%s:%d: needs wants \"needs "+
-						"NAME why it is needed\"",
-					path,
-					n,
-				)
-			}
-			c.Needs = append(
-				c.Needs,
-				Need{Name: name, Why: strings.TrimSpace(why)},
-			)
-		case "set":
-			if !words {
-				return fmt.Errorf(
-					"%s:%d: a value never lives "+
-						"in a repository; set it in "+
-						"~/.config/game/config, and "+
-						"declare it here with needs",
-					path,
-					n,
-				)
-			}
-			name, value, _ := strings.Cut(val, " ")
-			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf(
-					"%s:%d: set wants \"set NAME value\"",
-					path,
-					n,
-				)
-			}
-			if open != "" {
-				held := c.Projects[open]
-				if held.Set == nil {
-					held.Set = map[string]string{}
-				}
-				held.Set[name] = strings.TrimSpace(value)
-				c.Projects[open] = held
-				break
-			}
-			if c.Set == nil {
-				c.Set = map[string]string{}
-			}
-			c.Set[name] = strings.TrimSpace(value)
-		case "target", "run":
-			name, rest, ok := strings.Cut(val, " ")
-			dir, cmd, ok2 := strings.Cut(
-				strings.TrimSpace(rest),
-				"::",
-			)
-			if !ok || !ok2 || strings.TrimSpace(cmd) == "" {
-				return fmt.Errorf(
-					"%s:%d: %s wants \"%s NAME "+
-						"DIR :: COMMAND ...\"",
-					path,
-					n,
-					key,
-					key,
-				)
-			}
-			dir = expand(strings.TrimSpace(dir), home)
-			step := strings.Fields(strings.TrimSpace(cmd))
-			for i := range step {
-				step[i] = expand(step[i], home)
-			}
-			list := &c.Targets
-			if key == "run" {
-				list = &c.Runs
-			}
-			found := false
-			for i := range *list {
-				if (*list)[i].Name == name {
-					(*list)[i].Steps = append(
-						(*list)[i].Steps,
-						Step{Dir: dir, Args: step},
-					)
-					found = true
-				}
-			}
-			if !found {
-				*list = append(
-					*list,
-					Target{
-						Name: name,
-						Steps: []Step{
-							{Dir: dir, Args: step},
-						},
-					},
-				)
-			}
-		case "omit":
-			c.Omit = append(c.Omit, val)
-		case "sweep":
-			f := strings.Fields(val)
-			if len(f) < 3 || f[0] != "allow" {
-				return fmt.Errorf(
-					"%s:%d: sweep wants "+
-						"allow FILE KIND...; the "+
-						"kinds are %s",
-					path, n,
-					strings.Join(SweepKinds, ", "),
-				)
-			}
-			for _, k := range f[2:] {
-				known := false
-				for _, x := range SweepKinds {
-					known = known || x == k
-				}
-				if !known {
-					return fmt.Errorf(
-						"%s:%d: unknown sweep kind "+
-							"%q; the kinds are %s",
-						path, n, k,
-						strings.Join(
-							SweepKinds, ", "),
-					)
-				}
-			}
-			if c.SweepAllow == nil {
-				c.SweepAllow = map[string][]string{}
-			}
-			c.SweepAllow[f[1]] = append(
-				c.SweepAllow[f[1]], f[2:]...)
-		case "lint":
-			f := strings.Fields(val)
-			if len(f) == 0 {
-				return fmt.Errorf(
-					"%s:%d: lint wants a rule; "+
-						"the lints are %s",
-					path,
-					n,
-					strings.Join(Rules, ", "),
-				)
-			}
-			if f[0] == "allow" {
-				r, e := allowance(path, n, f)
-				if e != nil {
-					return e
-				}
-				c.Lint = append(c.Lint, r)
-				break
-			}
-			known := false
-			for _, r := range Rules {
-				known = known || r == f[0]
-			}
-			if !known {
-				return fmt.Errorf(
-					"%s:%d: unknown lint %q; "+
-						"the lints are %s",
-					path,
-					n,
-					f[0],
-					strings.Join(Rules, ", "),
-				)
-			}
-			c.Lint = append(c.Lint, Rule{Name: f[0], Args: f[1:]})
-		default:
-			return fmt.Errorf(
-				"%s:%d: unknown key %q; the keys are %s",
-				path,
-				n,
-				key,
-				strings.Join(Keys, ", "),
-			)
+		if err := cfg.setLine(&at, text); err != nil {
+			return err
 		}
 	}
 	return sc.Err()
 }
 
+// setLine reads one setting. project opens a block and every other key
+// goes to its setter.
+func (cfg *Config) setLine(at *line, text string) error {
+	key, val, err := split(text)
+	if err != nil {
+		return at.errorf("%v", err)
+	}
+	val = expand(val, at.home)
+	if at.open != "" && key != "road" && key != "dist" &&
+		key != "set" && key != "project" {
+		return at.errorf(
+			"%s is not a project's; a block holds "+
+				"road, dist and set, and %s belongs "+
+				"at the margin",
+			key,
+			key,
+		)
+	}
+	if key == "project" {
+		if err := cfg.openProject(*at, val); err != nil {
+			return err
+		}
+		at.open = val
+		return nil
+	}
+	set, known := setters[key]
+	if !known {
+		return at.errorf(
+			"unknown key %q; the keys are %s",
+			key,
+			strings.Join(keys, ", "),
+		)
+	}
+	return set(cfg, *at, key, val)
+}
+
+// openProject starts a project's block, in the dotfile only.
+func (cfg *Config) openProject(at line, name string) error {
+	if !at.words {
+		return at.errorf(
+			"a project block is the " +
+				"builder's; a repository " +
+				"says which one is its own " +
+				"with name",
+		)
+	}
+	if name == "" {
+		return at.errorf("project wants \"project NAME\"")
+	}
+	if cfg.projects == nil {
+		cfg.projects = map[string]Project{}
+	}
+	if _, held := cfg.projects[name]; !held {
+		cfg.projects[name] = Project{}
+	}
+	return nil
+}
+
+// setAuthor is the author line.
+func setAuthor(cfg *Config, _ line, _, val string) error {
+	cfg.author = val
+	return nil
+}
+
+// setLicense is the license line.
+func setLicense(cfg *Config, _ line, _, val string) error {
+	cfg.license = val
+	return nil
+}
+
+// setWords is the word list, which only the dotfile sets.
+func setWords(cfg *Config, at line, _, val string) error {
+	if at.words {
+		cfg.words = val
+	}
+	return nil
+}
+
+// setName is the repository's name, which the dotfile may not say.
+func setName(cfg *Config, at line, _, val string) error {
+	if at.words {
+		return at.errorf(
+			"name is a " +
+				"repository's; the dotfile " +
+				"names remotes with road " +
+				"and dist",
+		)
+	}
+	cfg.name = val
+	return nil
+}
+
+// setRemote is a road or a dist, inside a project block in the dotfile.
+func setRemote(cfg *Config, at line, key, val string) error {
+	if !at.words {
+		return at.errorf(
+			"%s is the builder's, in "+
+				"~/.config/game/config "+
+				"under its project; a "+
+				"repository never holds a "+
+				"remote",
+			key,
+		)
+	}
+	if at.open == "" {
+		return at.errorf(
+			"%s sits inside a project "+
+				"block: \"project NAME\", "+
+				"then %s indented under it",
+			key,
+			key,
+		)
+	}
+	if val == "" {
+		return at.errorf("%s wants a url", key)
+	}
+	if first, _, cut := strings.Cut(val, " "); cut && first == at.open {
+		return at.errorf(
+			"the block already names "+
+				"%s; %s takes the url alone",
+			at.open,
+			key,
+		)
+	}
+	held := cfg.projects[at.open]
+	if key == "road" {
+		held.road = val
+	} else {
+		held.dist = val
+	}
+	cfg.projects[at.open] = held
+	return nil
+}
+
+// setPublic is the old word for dist, which says so.
+func setPublic(_ *Config, at line, _, _ string) error {
+	return at.errorf(
+		"\"public\" is now \"dist\": " +
+			"the clean remote only game release " +
+			"pushes to; the dirty one is " +
+			"\"road\"",
+	)
+}
+
+// setExclude is a path prefix the sweep leaves alone.
+func setExclude(cfg *Config, _ line, _, val string) error {
+	cfg.exclude = append(cfg.exclude, val)
+	return nil
+}
+
+// setOmit is a file or directory kept on the road and out of every
+// release.
+func setOmit(cfg *Config, _ line, _, val string) error {
+	cfg.omit = append(cfg.omit, val)
+	return nil
+}
+
+// setStack is one member of the stack, name and ref, in .game only, and
+// theirs after the ref when the member is someone else's code.
+func setStack(cfg *Config, at line, _, val string) error {
+	if at.words {
+		return at.errorf(
+			"a stack is a " +
+				"repository's; the dotfile " +
+				"says where each member " +
+				"lives",
+		)
+	}
+	words := strings.Fields(val)
+	if len(words) < nameAndRef || len(words) > nameRefAndTheirs ||
+		len(words) == nameRefAndTheirs && words[third] != "theirs" {
+		return at.errorf("stack wants \"stack NAME REF\", or " +
+			"\"stack NAME REF theirs\" for someone else's code")
+	}
+	name, ref := words[first], words[second]
+	// a member's name is a directory under bin/stack that game removes
+	// and clones again, so it may not climb out or be hidden; and git
+	// reads it as a pathspec, so it holds no glob to reach another's.
+	if name == "" || strings.ContainsAny(name, `/\*?[`) ||
+		strings.HasPrefix(name, ".") {
+		return at.errorf("a stack member's name is one plain "+
+			"directory, not %q", name)
+	}
+	cfg.stack = append(cfg.stack, Member{name: name, ref: ref})
+	if len(words) == nameRefAndTheirs {
+		cfg.theirs = append(cfg.theirs, name)
+	}
+	return nil
+}
+
+// a stack line's words, as the line is defined: the name and the ref,
+// and theirs when the member is someone else's.
+const (
+	nameAndRef       = 2 // defined by the line: NAME REF
+	nameRefAndTheirs = 3 // defined by the line: NAME REF theirs
+)
+
+// IsTheirs is whether the stack member of that name is someone else's
+// code, marked theirs.
+func (cfg Config) IsTheirs(name string) bool {
+	return slices.Contains(cfg.theirs, name)
+}
+
+// setPatches is a directory in the repository where the stack keeps
+// members' patches beside patches/, each in NAME under it. stacks that
+// can't put patches in a member's own repository keep them there, as
+// carrie keeps charm's in charmbracelet/patches. in .game only.
+func setPatches(cfg *Config, at line, _, val string) error {
+	if at.words {
+		return at.errorf("patches are a repository's; " +
+			"say where in its .game")
+	}
+	words := strings.Fields(val)
+	if len(words) != count.One || !filepath.IsLocal(words[first]) {
+		return at.errorf("patches wants one directory inside "+
+			"the repository, as \"patches charm/patches\"; "+
+			"not %q", val)
+	}
+	dir := filepath.Clean(words[first])
+	top, _, _ := strings.Cut(filepath.ToSlash(dir), "/")
+	switch {
+	case dir == ".":
+		return at.errorf("patches names a directory inside the " +
+			"repository, not the repository itself")
+	case strings.EqualFold(dir, "patches"):
+		return at.errorf("patches/ is always read; name only " +
+			"the directories beside it")
+	case strings.EqualFold(top, "bin"):
+		return at.errorf("patches %s is in bin, where game puts what "+
+			"it builds and clones", dir)
+	case slices.ContainsFunc(cfg.patches, sameFold(dir).is):
+		return at.errorf("patches %s is named twice", dir)
+	}
+	cfg.patches = append(cfg.patches, dir)
+	return nil
+}
+
+// patchesBesideMembers refuses a patches directory inside a stack
+// member's. game lays members under their names, so a place there would
+// read the member's own files as the stack's patches. stack lines can
+// come after a patches line, so this runs once .game is read.
+func (cfg Config) patchesBesideMembers() error {
+	for _, dir := range cfg.patches {
+		top, _, _ := strings.Cut(filepath.ToSlash(dir), "/")
+		for _, member := range cfg.stack {
+			if !strings.EqualFold(top, member.name) {
+				continue
+			}
+			return fmt.Errorf(".game: patches %s is inside "+
+				"stack member %s, whose own files would be "+
+				"read as the stack's patches", dir, member.name)
+		}
+	}
+	return nil
+}
+
+// sameFold is whether a name is dir, case folded.
+type sameFold string
+
+// is says whether named is the directory, case folded.
+func (dir sameFold) is(named string) bool {
+	return strings.EqualFold(named, string(dir))
+}
+
+// setNeeds is a setting the repository declares it needs, and why.
+func setNeeds(cfg *Config, at line, _, val string) error {
+	if at.words {
+		return at.errorf(
+			"needs is a " +
+				"repository's declaration; " +
+				"the dotfile gives values " +
+				"with set",
+		)
+	}
+	name, why, _ := strings.Cut(val, " ")
+	if strings.TrimSpace(why) == "" {
+		return at.errorf(
+			"needs wants \"needs " +
+				"NAME why it is needed\"",
+		)
+	}
+	cfg.needs = append(cfg.needs,
+		Need{name: name, why: strings.TrimSpace(why)})
+	return nil
+}
+
+// setValue sets a value from the dotfile for a project or globally.
+func setValue(cfg *Config, at line, _, val string) error {
+	if !at.words {
+		return at.errorf(
+			"a value never lives " +
+				"in a repository; set it in " +
+				"~/.config/game/config, and " +
+				"declare it here with needs",
+		)
+	}
+	name, value, _ := strings.Cut(val, " ")
+	if strings.TrimSpace(value) == "" {
+		return at.errorf("set wants \"set NAME value\"")
+	}
+	if at.open != "" {
+		held := cfg.projects[at.open]
+		if held.set == nil {
+			held.set = map[string]string{}
+		}
+		held.set[name] = strings.TrimSpace(value)
+		cfg.projects[at.open] = held
+		return nil
+	}
+	if cfg.set == nil {
+		cfg.set = map[string]string{}
+	}
+	cfg.set[name] = strings.TrimSpace(value)
+	return nil
+}
+
+// setTarget is one step of a target or a run: the name, the directory
+// and, after the double colon, the command. steps of one name gather in
+// order.
+func setTarget(cfg *Config, at line, key, val string) error {
+	// with no space there is no rest, and with no :: there is no
+	// command, so an empty command is every way this line falls short
+	name, rest, _ := strings.Cut(val, " ")
+	dir, cmd, _ := strings.Cut(strings.TrimSpace(rest), "::")
+	if strings.TrimSpace(cmd) == "" {
+		return at.errorf(
+			"%s wants \"%s NAME "+
+				"DIR :: COMMAND ...\"",
+			key,
+			key,
+		)
+	}
+	dir = expand(strings.TrimSpace(dir), at.home)
+	step := strings.Fields(strings.TrimSpace(cmd))
+	for i := range step {
+		step[i] = expand(step[i], at.home)
+	}
+	list := &cfg.targets
+	if key == "run" {
+		list = &cfg.runs
+	}
+	for i := range *list {
+		if (*list)[i].name == name {
+			(*list)[i].steps = append(
+				(*list)[i].steps,
+				Step{dir: dir, args: step},
+			)
+			return nil
+		}
+	}
+	*list = append(*list, Target{
+		name:  name,
+		steps: []Step{{dir: dir, args: step}},
+	})
+	return nil
+}
+
+// setSweep is "sweep allow FILE KIND...", the kinds of hit one file is
+// meant to carry.
+func setSweep(cfg *Config, at line, _, val string) error {
+	words := strings.Fields(val)
+	if len(words) < allowWords || words[first] != "allow" {
+		return at.errorf(
+			"sweep wants "+
+				"allow FILE KIND...; the "+
+				"kinds are %s",
+			strings.Join(sweepKinds, ", "),
+		)
+	}
+	file, kinds := words[second], words[third:]
+	for _, kind := range kinds {
+		if !slices.Contains(sweepKinds, kind) {
+			return at.errorf(
+				"unknown sweep kind "+
+					"%q; the kinds are %s",
+				kind,
+				strings.Join(sweepKinds, ", "),
+			)
+		}
+	}
+	if cfg.sweepAllow == nil {
+		cfg.sweepAllow = map[string][]string{}
+	}
+	cfg.sweepAllow[file] = append(cfg.sweepAllow[file], kinds...)
+	return nil
+}
+
+// setLint is one lint rule, or an allowance.
+func setLint(cfg *Config, at line, _, val string) error {
+	words := strings.Fields(val)
+	if count.None(len(words)) {
+		return at.errorf(
+			"lint wants a rule; "+
+				"the lints are %s",
+			strings.Join(rules, ", "),
+		)
+	}
+	name, args := words[first], words[second:]
+	if name == "allow" {
+		rule, err := allowance(at.path, at.at, words)
+		if err != nil {
+			return err
+		}
+		cfg.lint = append(cfg.lint, rule)
+		return nil
+	}
+	if !slices.Contains(rules, name) {
+		return at.errorf(
+			"unknown lint %q; "+
+				"the lints are %s",
+			name,
+			strings.Join(rules, ", "),
+		)
+	}
+	cfg.lint = append(cfg.lint, Rule{name: name, args: args})
+	return nil
+}
+
+// setRapid is "rapid checks N", how many checks a property test runs.
+func setRapid(cfg *Config, at line, _, val string) error {
+	key, said, _ := strings.Cut(val, " ")
+	said = strings.TrimSpace(said)
+	var checks int
+	if key == "checks" && !strings.ContainsAny(said, " \t") {
+		checks, _ = strconv.Atoi(said)
+	}
+	if !count.Positive(checks) {
+		return at.errorf(
+			"rapid takes checks N, how " +
+				"many checks a property test " +
+				"runs: rapid checks 1000",
+		)
+	}
+	cfg.rapidChecks = checks
+	return nil
+}
+
 // split splits "key value" or "key = value". the key is lowercased and the
 // value is unquoted. a line with no value is an error.
 func split(line string) (string, string, error) {
-	var key, val string
-	if i := strings.IndexAny(line, " \t="); i >= 0 {
-		key, val = line[:i], strings.TrimSpace(
-			strings.TrimLeft(line[i:], " \t="),
-		)
-	} else {
-		key = line
+	key, val, _ := strings.Cut(line, "=")
+	for _, space := range []string{" ", "\t"} {
+		word, rest, cut := strings.Cut(line, space)
+		if cut && len(word) < len(key) {
+			key, val = word, rest
+		}
 	}
+	val = strings.TrimSpace(strings.TrimLeft(val, " \t="))
 	key = strings.ToLower(strings.TrimSpace(key))
 	if key == "" || val == "" {
 		return "", "", fmt.Errorf("want \"key value\", got %q", line)
 	}
-	if len(val) >= 2 &&
-		(val[0] == '"' && val[len(val)-1] == '"' ||
-			val[0] == '\'' && val[len(val)-1] == '\'') {
-		val = val[1 : len(val)-1]
+	return key, unquoted(val), nil
+}
+
+// unquoted is a value with the one pair of quotes around it taken off,
+// double or single, when it has them.
+func unquoted(val string) string {
+	for _, quote := range []string{`"`, `'`} {
+		inner, quoted := strings.CutPrefix(val, quote)
+		inner, closed := strings.CutSuffix(inner, quote)
+		if quoted && closed && len(val) > len(quote) {
+			return inner
+		}
 	}
-	return key, val, nil
+	return val
 }
 
 // expand turns a leading ~ into the home directory.
@@ -801,29 +1102,29 @@ func expand(val, home string) string {
 	if val == "~" {
 		return home
 	}
-	if strings.HasPrefix(val, "~/") {
-		return filepath.Join(home, val[2:])
+	if under, ok := strings.CutPrefix(val, "~/"); ok {
+		return filepath.Join(home, under)
 	}
 	return val
 }
 
 // Missing lists every need not set, with reason. build can refuse early.
-func (c Config) Missing() []Need {
+func (cfg Config) Missing() []Need {
 	var out []Need
-	for _, n := range c.Needs {
-		if _, ok := c.Set[n.Name]; !ok {
-			out = append(out, n)
+	for _, need := range cfg.needs {
+		if _, ok := cfg.set[need.name]; !ok {
+			out = append(out, need)
 		}
 	}
 	return out
 }
 
 // Env is the declared settings as NAME=value. only what the repo declared.
-func (c Config) Env() []string {
+func (cfg Config) Env() []string {
 	var out []string
-	for _, n := range c.Needs {
-		if v, ok := c.Set[n.Name]; ok {
-			out = append(out, n.Name+"="+v)
+	for _, need := range cfg.needs {
+		if value, ok := cfg.set[need.name]; ok {
+			out = append(out, need.name+"="+value)
 		}
 	}
 	return out

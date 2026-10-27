@@ -1,0 +1,34 @@
+# numbers.yaml: the numbers sweep's tests are held to, by name (the
+# ruling 4, 2026-10-18: a test's numbers live in a config, and the test
+# is held to it).
+
+numbers:
+  - name: kilobyte
+    value: 1024
+    says: how much of a file the sweep reads for a nul byte when it decides the file is text, the boundary the utf8ish property is held to
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where sweep.go's kilobyte holds it
+
+  - name: drawn-most-fillers
+    value: 3
+    says: the most filler words drawn around a never-word in the property, enough that a word never stands alone every time
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-entries
+    value: 5
+    says: the most never-words baked in one property draw, enough that order and placement both vary
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-good-entries
+    value: 3
+    says: the most well-formed entries drawn beside a too-long one, so the refusal names the too-long one's place among them
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-overlong-span
+    value: 4
+    says: how far past the most words a name may have the refused entries are drawn, so the refusal's count varies too
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a

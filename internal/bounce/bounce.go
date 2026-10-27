@@ -1,7 +1,6 @@
 // Package bounce flags added lines that name the repository's author.
 //
-// the caller gives the name. the check is the name as a whole word in added
-// lines.
+// the check looks for the name as a whole word in added lines.
 package bounce
 
 import (
@@ -13,11 +12,16 @@ import (
 
 // Hit is one added line that names the author.
 type Hit struct {
-	Line string
+	line string
 }
 
-// Check looks at a diff for added lines with the name in them.
-func Check(diff, name string) []Hit {
+// Line is the added line, as the diff shows it.
+func (hit Hit) Line() string {
+	return hit.line
+}
+
+// check looks at a diff for added lines with the name in them.
+func check(diff, name string) []Hit {
 	if name == "" {
 		return nil
 	}
@@ -29,29 +33,38 @@ func Check(diff, name string) []Hit {
 			continue
 		}
 		if re.MatchString(line) {
-			hits = append(hits, Hit{Line: line})
+			hits = append(hits, Hit{line: line})
 		}
 	}
 	return hits
 }
 
 // Staged checks what is staged in the repository.
-func Staged(r repo.Repo, name string) ([]Hit, error) {
-	diff, err := r.Git("diff", "--cached", "-U0")
+func Staged(here repo.Repo, name string) ([]Hit, error) {
+	diff, err := here.Git("diff", "--cached", "-U0")
 	if err != nil {
 		return nil, err
 	}
-	return Check(diff, name), nil
+	return check(diff, name), nil
 }
 
-// Range checks a revision or range, e.g. main..release.
-func Range(r repo.Repo, rng, name string) ([]Hit, error) {
-	diff, err := r.Git("diff", "-U0", rng)
-	if err != nil {
-		diff, err = r.Git("show", "-U0", "--format=", rng)
-		if err != nil {
-			return nil, err
-		}
+// Range checks a range, e.g. main..release, or one commit. a range is
+// the lines added across it. one commit is its own added lines, which
+// is git show: git diff of one revision would be the tree since then,
+// working tree and all, and not the commit at all.
+//
+// a merge is shown against its first parent, the lines it brought in:
+// its combined diff is empty when nothing conflicted.
+func Range(here repo.Repo, rng, name string) ([]Hit, error) {
+	args := []string{
+		"show", "-U0", "--format=", "--diff-merges=first-parent", rng,
 	}
-	return Check(diff, name), nil
+	if strings.Contains(rng, "..") {
+		args = []string{"diff", "-U0", rng}
+	}
+	diff, err := here.Git(args...)
+	if err != nil {
+		return nil, err
+	}
+	return check(diff, name), nil
 }

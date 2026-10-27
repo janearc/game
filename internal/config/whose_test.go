@@ -1,6 +1,10 @@
-package config
+package config_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/janearc/game/internal/config"
+)
 
 // TestWhose: an agent has an anchor and wants its own roads and dists;
 // a person in a shell wants theirs. faking HOME would work and would move
@@ -8,11 +12,11 @@ import "testing"
 func TestWhose(t *testing.T) {
 	t.Setenv("HOME", "/hers")
 	t.Setenv("GAME_HOME", "")
-	if got := Whose(); got != "/hers" {
+	if got := config.Whose(); got != "/hers" {
 		t.Errorf("with no GAME_HOME the shell's home stands: %q", got)
 	}
 	t.Setenv("GAME_HOME", "/an/agent/anchor")
-	if got := Whose(); got != "/an/agent/anchor" {
+	if got := config.Whose(); got != "/an/agent/anchor" {
 		t.Errorf("GAME_HOME wins when it is set: %q", got)
 	}
 }

@@ -1,2 +1,6 @@
 bin/
 /internal/sweep/never/hashes
+
+# rapid writes a failing draw here, for reproducing it by hand
+**/testdata/rapid/
+/game

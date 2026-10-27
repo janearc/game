@@ -1,19 +1,18 @@
 // Package lint runs the lint rules written in your config or the repository's
 // .game. game has no opinions of its own.
 //
-// a rule can ask that every function has a comment above it, that there is no
-// bare print outside package main, that banned words stay out, and that docs
-// have no exclamation marks.
+// rules can ask for a comment above every function, no bare print outside
+// package main, banned words kept out, and no exclamation marks in docs.
 //
-// prose, docs and comments have a width, and wider code is reported to look
-// at. a readme has a height. shouty capitals in comments are reported, not
-// failed.
+// prose, docs and comments have a width. wider code is reported to look at.
+// a readme has a height. shouty capitals in comments are reported to look at.
 //
 // go vet and gofmt belong to check. staticcheck runs here, and a missing
 // staticcheck is a finding.
 package lint
 
 import (
+	"cmp"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -22,211 +21,279 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/toolchain"
 )
 
 // Finding is one thing to fix, or one thing to look at.
 type Finding struct {
-	File string
-	Line int
-	Rule string
-	Text string
-	Look bool // seen rather than named, and it still fails
+	file string
+	line int
+	rule string
+	text string
+	look bool // seen rather than named, and it still fails
 }
 
-// Verdict counts the fix and look findings, and returns an error if there are
-// any of either.
+// File is the file the finding is in.
+func (found Finding) File() string { return found.file }
+
+// Rule is the rule the finding breaks.
+func (found Finding) Rule() string { return found.rule }
+
+// Text is what the finding says.
+func (found Finding) Text() string { return found.text }
+
+// Look is whether the finding is to look at rather than to fix: seen
+// rather than named, and it still fails.
+func (found Finding) Look() bool { return found.look }
+
+// looked is one finding to look at, at a line of a file.
+func looked(file string, line int, rule, text string) Finding {
+	return Finding{file: file, line: line, rule: rule, text: text,
+		look: true}
+}
+
+// Report is one finding to fix, at a line of a file, or against the
+// file alone when the line is nothing: a binary, a tool or a build
+// setting has no line.
+func Report(file string, line int, rule, text string) Finding {
+	return Finding{file: file, line: line, rule: rule, text: text}
+}
+
+// Harden is whether the harden rule is on, which release and verify
+// read to know whether to go beyond the source.
+func (rules Lint) Harden() bool { return rules.harden }
+
+// Verdict counts the fix and look findings, and errors if there are any.
 func Verdict(found []Finding) (fix, look int, err error) {
-	for _, f := range found {
-		if f.Look {
+	for _, finding := range found {
+		if finding.look {
 			look++
 		} else {
 			fix++
 		}
 	}
 	switch {
-	case fix > 0 && look > 0:
+	case count.Positive(fix) && count.Positive(look):
 		err = fmt.Errorf("lint: %d to fix, %d to look at", fix, look)
-	case fix > 0:
+	case count.Positive(fix):
 		err = fmt.Errorf("lint: %d to fix", fix)
-	case look > 0:
+	case count.Positive(look):
 		err = fmt.Errorf("lint: %d to look at", look)
 	}
 	return fix, look, err
 }
 
-// String is the finding as one line: lint for a thing to fix, look for
-// a thing to see.
-func (f Finding) String() string {
+// String is the finding as one line, marked lint or look.
+func (found Finding) String() string {
 	mark := "lint"
-	if f.Look {
+	if found.look {
 		mark = "look"
 	}
 	return fmt.Sprintf(
 		"%s: %s:%d: %s: %s",
 		mark,
-		f.File,
-		f.Line,
-		f.Rule,
-		f.Text,
+		found.file,
+		found.line,
+		found.rule,
+		found.text,
 	)
 }
 
 // Lint is the rules as described, ready to run.
 type Lint struct {
-	Width     int // 0 is no rule
-	Rows      int
-	Paragraph int // the most lines a paragraph of prose may run to
-	Comments  bool
-	Print     bool
-	Exclaim   bool
-	Shout     bool
-	Tests     bool // lint the tests too; by default they are left alone
-	words     *regexp.Regexp
-	allow     map[string][]string // file to the rules it is let off
+	width     int // nothing is no rule
+	rows      int
+	paragraph int // the most lines a paragraph of prose may run to
+	comments  bool
+	print     bool
+	exclaim   bool
+	shout     bool
+	tests     bool // lint the tests too; by default they are left alone
+	harden    bool // report privilege and unsafe file handling
+	// the four habits of a comment that is not plain. commas is how many
+	// in one sentence are too many; nothing is no rule.
+	chain   bool
+	commas  int
+	opener  bool
+	history bool
+	words   *regexp.Regexp
+	allow   map[string][]string // file to the rules it is let off
 }
 
 // Describe turns rule lines into a Lint; a bad argument is an error.
-func Describe(rules []struct {
-	Name string
-	Args []string
-}) (Lint, error) {
-	var l Lint
-	for _, r := range rules {
-		switch r.Name {
-		case "width", "rows", "paragraph":
-			if len(r.Args) != 1 {
-				return l, fmt.Errorf(
-					"lint %s wants one number",
-					r.Name,
-				)
-			}
-			n := 0
-			for _, c := range r.Args[0] {
-				if c < '0' || c > '9' {
-					return l, fmt.Errorf(
-						"lint %s wants a "+
-							"number, not %q",
-						r.Name,
-						r.Args[0],
-					)
-				}
-				n = n*10 + int(c-'0')
-			}
-			switch r.Name {
-			case "width":
-				l.Width = n
-			case "rows":
-				l.Rows = n
-			default:
-				l.Paragraph = n
-			}
-		case "comments":
-			l.Comments = true
-		case "print":
-			l.Print = true
-		case "exclaim":
-			l.Exclaim = true
-		case "tests":
-			l.Tests = true
-		case "shout":
-			l.Shout = true
-		case "allow":
-			if len(r.Args) < 2 {
-				return l, fmt.Errorf(
-					"lint allow wants a file and a lint",
-				)
-			}
-			if l.allow == nil {
-				l.allow = map[string][]string{}
-			}
-			for _, name := range r.Args[1:] {
-				if to, ok := allowSaid[name]; ok {
-					name = to
-				}
-				if !allowKnown[name] {
-					return l, fmt.Errorf(
-						"lint allow %s: no lint "+
-							"called %q",
-						r.Args[0], name,
-					)
-				}
-				l.allow[r.Args[0]] = append(
-					l.allow[r.Args[0]],
-					name,
-				)
-			}
-		case "words":
-			if len(r.Args) == 0 {
-				return l, fmt.Errorf(
-					"lint words wants at least one word",
-				)
-			}
-			quoted := make([]string, 0, len(r.Args))
-			for _, w := range r.Args {
-				quoted = append(quoted, regexp.QuoteMeta(w))
-			}
-			l.words = regexp.MustCompile(
-				`(?i)\b(` + strings.Join(quoted, "|") + `)\b`,
-			)
-		default:
-			return l, fmt.Errorf("unknown lint %q", r.Name)
+func Describe(lines []config.Rule) (Lint, error) {
+	var rules Lint
+	for _, rule := range lines {
+		if err := rules.describe(rule); err != nil {
+			return rules, err
 		}
 	}
-	return l, nil
+	return rules, nil
 }
 
-// testy returns true if the path is a test file. Run skips test files
-// unless Tests is set.
+// turned is the rules that are on or off, by name: where each is kept.
+// a name that is no such rule is nil.
+func (rules *Lint) turned(name string) *bool {
+	switches := map[string]*bool{
+		"chain":    &rules.chain,
+		"opener":   &rules.opener,
+		"history":  &rules.history,
+		"comments": &rules.comments,
+		"print":    &rules.print,
+		"exclaim":  &rules.exclaim,
+		"tests":    &rules.tests,
+		"harden":   &rules.harden,
+		"shout":    &rules.shout,
+	}
+	return switches[name]
+}
+
+// describe reads one rule into the lint.
+func (rules *Lint) describe(rule config.Rule) error {
+	name, args := rule.Name(), rule.Args()
+	if on := rules.turned(name); on != nil {
+		*on = true
+		return nil
+	}
+	switch name {
+	case "width", "rows", "paragraph", "commas":
+		return rules.numbered(name, args)
+	case "allow":
+		return rules.allowing(args)
+	case "words":
+		return rules.banning(args)
+	}
+	return fmt.Errorf("unknown lint %q", name)
+}
+
+// numbered reads a rule that takes one number.
+func (rules *Lint) numbered(name string, args []string) error {
+	if len(args) != count.One {
+		return fmt.Errorf("lint %s wants one number", name)
+	}
+	said := args[count.First]
+	number, err := strconv.Atoi(said)
+	if err != nil || !count.Positive(number) ||
+		strings.TrimLeft(said, "0123456789") != "" {
+		return fmt.Errorf("lint %s wants a number, not %q", name, said)
+	}
+	switch name {
+	case "width":
+		rules.width = number
+	case "rows":
+		rules.rows = number
+	case "commas":
+		rules.commas = number
+	default:
+		rules.paragraph = number
+	}
+	return nil
+}
+
+// fileAndLint is the fewest arguments an allow takes: the file and one
+// lint, as the line is defined.
+const fileAndLint = 2
+
+// allowing reads an allow: the file, then the lints it is let off.
+func (rules *Lint) allowing(args []string) error {
+	if len(args) < fileAndLint {
+		return fmt.Errorf("lint allow wants a file and a lint")
+	}
+	if rules.allow == nil {
+		rules.allow = map[string][]string{}
+	}
+	file, lints := args[count.First], args[count.Next(count.First):]
+	for _, name := range lints {
+		if to, ok := allowSaid[name]; ok {
+			name = to
+		}
+		if !allowKnown[name] {
+			return fmt.Errorf("lint allow %s: no lint called %q",
+				file, name)
+		}
+		rules.allow[file] = append(rules.allow[file], name)
+	}
+	return nil
+}
+
+// banning reads the words banned from code and docs.
+func (rules *Lint) banning(args []string) error {
+	if count.None(len(args)) {
+		return fmt.Errorf("lint words wants at least one word")
+	}
+	quoted := make([]string, count.Nothing, len(args))
+	for _, word := range args {
+		quoted = append(quoted, regexp.QuoteMeta(word))
+	}
+	rules.words = regexp.MustCompile(
+		`(?i)\b(` + strings.Join(quoted, "|") + `)\b`,
+	)
+	return nil
+}
+
+// testy returns true if the path is a test file: go's, or a C program's
+// named test_. Run skips test files unless Tests is set. a file of any
+// other language is no kind lint reads, so its tests are not named here.
 func testy(path string) bool {
 	base := filepath.Base(path)
-	switch {
-	case strings.HasPrefix(path, "testdata/"),
-		strings.Contains(path, "/testdata/"),
-		strings.HasSuffix(base, "_test.go"),
-		strings.HasSuffix(base, "_test.py"),
-		strings.HasSuffix(base, "_test.ts"),
-		strings.HasSuffix(base, ".test.ts"),
-		strings.HasSuffix(base, ".test.js"),
-		strings.HasSuffix(base, "_test.exs"),
-		strings.HasPrefix(base, "test_"):
-		return true
-	}
-	return false
+	return strings.HasSuffix(base, "_test.go") ||
+		strings.HasPrefix(base, "test_")
 }
 
-// Empty is whether nothing was described.
-func (l Lint) Empty() bool {
-	return l.Width == 0 && l.Rows == 0 && l.Paragraph == 0 && !l.Comments &&
-		!l.Print && !l.Exclaim && !l.Shout && l.words == nil
+// Empty is whether nothing was described. One comment rule alone is a
+// config. That is chain or commas or opener or history.
+func (rules Lint) Empty() bool {
+	return count.None(rules.width) && count.None(rules.rows) &&
+		count.None(rules.paragraph) &&
+		!rules.comments && !rules.print && !rules.exclaim &&
+		!rules.shout && !rules.asksHabit() &&
+		!rules.harden && rules.words == nil
 }
 
 // shout matches a run of five or more capitals.
 var shout = regexp.MustCompile(`\b[A-Z]{5,}\b`)
 
+// a match's span as regexp gives it: where it starts and where it ends.
+const (
+	spanStart = 0 // defined by regexp: the first of the pair
+	spanEnd   = 1 // defined by regexp: the second of the pair
+)
+
 // shouted returns the runs of capitals in a line that are shouting. it skips
 // allowed words, file names and anything inside backticks.
 func shouted(line string) []string {
 	var out []string
-	ticks := 0
-	last := 0
-	for _, m := range shout.FindAllStringIndex(line, -1) {
-		ticks += strings.Count(line[last:m[0]], "`")
-		last = m[0]
-		w := line[m[0]:m[1]]
-		quoted := ticks%2 == 1
-		if !allowed[w] && !quoted && !named(line, m[0], m[1]) {
-			out = append(out, w)
+	var ticks, last int
+	for _, span := range shout.FindAllStringIndex(line, every) {
+		start, end := span[spanStart], span[spanEnd]
+		ticks += strings.Count(line[last:start], "`")
+		last = start
+		word := line[start:end]
+		if !allowed[word] && !betweenTicks(ticks) && !named(line, end) {
+			out = append(out, word)
 		}
 	}
 	return out
 }
 
-// header is how many lines at the top of a document are its art: a title and
-// one fenced or indented block after it. a block further down is not art.
+// betweenTicks is whether a place after that many backticks is inside a
+// pair of them: an odd count opened one that has not closed.
+func betweenTicks(ticks int) bool {
+	const pair = 2 // defined: backticks come in pairs
+	return ticks%pair == count.One
+}
+
+// header is how many lines at the top of a document are its title and art.
+// the art is one fenced or indented block at the top.
 func header(lines []string) int {
-	i := 0
+	i := count.First
 	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
 		i++
 	}
@@ -237,70 +304,72 @@ func header(lines []string) int {
 		i++
 	}
 	if i >= len(lines) {
-		return 0
+		return count.Nothing
 	}
 	fenced := strings.HasPrefix(strings.TrimSpace(lines[i]), "```")
 	indented := strings.HasPrefix(lines[i], "    ") ||
 		strings.HasPrefix(lines[i], "\t")
 	if !fenced && !indented {
-		return 0
+		return count.Nothing
 	}
 	if fenced {
-		for j := i + 1; j < len(lines); j++ {
-			fence := strings.TrimSpace(lines[j])
+		for after := count.Next(i); after < len(lines); after++ {
+			fence := strings.TrimSpace(lines[after])
 			if strings.HasPrefix(fence, "```") {
-				return j + 1
+				return count.Next(after)
 			}
 		}
-		return 0
+		return count.Nothing
 	}
-	j := i
-	for j < len(lines) {
-		line := lines[j]
+	after := i
+	for after < len(lines) {
+		line := lines[after]
 		if strings.TrimSpace(line) == "" ||
 			strings.HasPrefix(line, "    ") ||
 			strings.HasPrefix(line, "\t") {
-			j++
+			after++
 			continue
 		}
 		break
 	}
-	return j
+	return after
 }
 
-// named is whether the capitals at from:to sit in a file's name, as DESIGN.md
-// does. the name is the whole token of letters, digits, dots, hyphens,
-// underscores and slashes around them, and it needs a lowercase extension.
-func named(line string, from, to int) bool {
-	part := func(c byte) bool {
-		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
-			c >= '0' && c <= '9' ||
-			c == '.' || c == '-' || c == '_' || c == '/'
-	}
-	start, end := from, to
-	for start > 0 && part(line[start-1]) {
-		start--
-	}
-	for end < len(line) && part(line[end]) {
+// named is whether the capitals ending at to sit in a file's name, as
+// DESIGN.md does: the letters, digits, dots, hyphens, underscores and
+// slashes after them end in a dot and a lowercase extension. what comes
+// before the capitals cannot change that, so it is not read.
+func named(line string, to int) bool {
+	end := to
+	for end < len(line) && partOfName(line[end]) {
 		end++
 	}
-	token := line[start:end]
-	dot := strings.LastIndexByte(token, '.')
-	if dot < 0 || dot == len(token)-1 {
+	rest := line[to:end]
+	dot := strings.LastIndexByte(rest, '.')
+	if dot == notFound {
 		return false
 	}
-	for i := dot + 1; i < len(token); i++ {
-		if token[i] < 'a' || token[i] > 'z' {
-			return false
-		}
-	}
-	return true
+	extension := rest[count.Next(dot):]
+	return extension != "" &&
+		strings.Trim(extension, "abcdefghijklmnopqrstuvwxyz") == ""
 }
 
-// importLine matches an import line. at most an alias, a dot or an underscore
-// comes before the path.
+// notFound is what strings gives for a place it did not find, as it
+// has defined it.
+const notFound = -1
+
+// partOfName is whether a byte may be part of a file's name: a letter,
+// a digit, a dot, a hyphen, an underscore or a slash.
+func partOfName(char byte) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' ||
+		char >= '0' && char <= '9' ||
+		char == '.' || char == '-' || char == '_' || char == '/'
+}
+
+// importLine matches an import line. optional alias, dot, or underscore
+// before the path.
 var importLine = regexp.MustCompile(
-	`^\s*([A-Za-z_]\w*|\.|_)?\s*"[^"]+"\s*(//.*)?$`)
+	`^\s*(?P<alias>[A-Za-z_]\w*|\.|_)?\s*"[^"]+"\s*(//.*)?$`)
 
 // keywords that can start a statement, not an import.
 var notAnAlias = map[string]bool{
@@ -308,45 +377,50 @@ var notAnAlias = map[string]bool{
 	"chan": true, "range": true, "break": true, "continue": true,
 }
 
-// imported checks if a line is an import. the path is one token and
-// cannot be split. only the alias could be shorter, but it is a name.
+// imported checks if a line is an import. it is not when a keyword such as
+// return stands where the alias would.
 func imported(line string) bool {
-	m := importLine.FindStringSubmatch(line)
-	if m == nil {
+	match := importLine.FindStringSubmatch(line)
+	if match == nil {
 		return false
 	}
-	return !notAnAlias[m[1]]
+	return !notAnAlias[match[importLine.SubexpIndex("alias")]]
 }
 
 // allowedHere is whether line i, or the comment line above it, says "game:
 // allow RULE". a bare "game: allow" allows every rule.
 func allowedHere(lines []string, i int, rule string) bool {
-	says := func(text string) bool {
-		at := strings.Index(text, "game: allow")
-		if at < 0 {
-			return false
-		}
-		rest := strings.TrimSpace(text[at+len("game: allow"):])
-		return rest == "" || strings.HasPrefix(rest, rule)
-	}
-	if says(lines[i]) {
+	if saysAllow(lines[i], rule) {
 		return true
 	}
-	for j := i - 1; j >= 0; j-- {
-		t := strings.TrimSpace(lines[j])
-		if t == "" {
+	for above := count.Last(i); above >= count.First; above-- {
+		text := strings.TrimSpace(lines[above])
+		if text == "" {
 			continue
 		}
-		if !strings.HasPrefix(t, "//") && !strings.HasPrefix(t, "#") {
+		comment := strings.HasPrefix(text, "//") ||
+			strings.HasPrefix(text, "#")
+		if !comment {
 			return false
 		}
-		return says(t)
+		return saysAllow(text, rule)
 	}
 	return false
 }
 
-// tagged matches a struct field with a tag. the tag is one literal
-// and cannot be split. the type may be inline with no braces.
+// saysAllow is whether a line says "game: allow", bare or naming the
+// rule.
+func saysAllow(text, rule string) bool {
+	_, after, said := strings.Cut(text, "game: allow")
+	if !said {
+		return false
+	}
+	rest := strings.TrimSpace(after)
+	return rest == "" || strings.HasPrefix(rest, rule)
+}
+
+// tagged matches a struct field with a tag. the tag is one backtick literal.
+// the type is a plain name or a short struct on the same line.
 var tagged = regexp.MustCompile(
 	`^\s*[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*\s+` +
 		`([][*.\w]*struct\{[^{}` + "`" + `]*\}|[][*.\w]+(\{\})?)` +
@@ -374,11 +448,10 @@ var allowed = map[string]bool{
 	"RECOMMENDED": true, "OPTIONAL": true,
 }
 
-// Run lints a module rooted at dir by the rules described. it lints what git
-// tracks or would track. outside a repository it walks dir and skips hidden
-// directories, bin, build, testdata and vendor. test files are left alone
-// unless Tests is set.
-func (l Lint) Run(dir string) ([]Finding, error) {
+// Run lints the go and markdown files git tracks, or would track, under
+// dir, or every one when dir is no repository. it adds staticcheck, drops
+// what the allowances let off and sorts by file and line.
+func (rules Lint) Run(dir string) ([]Finding, error) {
 	files, err := tracked(dir)
 	if err != nil {
 		files, err = walked(dir)
@@ -388,72 +461,115 @@ func (l Lint) Run(dir string) ([]Finding, error) {
 	}
 	var out []Finding
 	for _, rel := range files {
-		if testy(rel) && !l.Tests {
+		if testy(rel) && !rules.tests {
 			continue
 		}
-		path := filepath.Join(dir, rel)
-		switch {
-		case strings.HasSuffix(rel, ".go"):
-			f, e := l.goFile(path, rel)
-			if e != nil {
-				return nil, e
-			}
-			out = append(out, f...)
-		case strings.HasSuffix(rel, ".md"):
-			f, e := l.doc(path, rel)
-			if e != nil {
-				return nil, e
-			}
-			out = append(out, f...)
+		found, err := rules.file(filepath.Join(dir, rel), rel)
+		if err != nil {
+			built := runtime.Version()
+			return nil, toolchain.Explain(dir, built, err)
 		}
+		out = append(out, found...)
 	}
-	// a missing linter is a failure. staticcheck must run. if it is
-	// not present, report it.
-	sc := tool("staticcheck")
+	out = append(out, staticcheck(dir)...)
+	return rules.kept(out), nil
+}
+
+// file lints one file by its kind, less the findings on lines that say
+// noqa; a file of no kind has no findings. C, Objective-C and Swift are
+// of a kind to the harden rule alone.
+func (rules Lint) file(path, rel string) ([]Finding, error) {
+	switch {
+	case strings.HasSuffix(rel, ".go"), strings.HasSuffix(rel, ".md"):
+	case rules.harden && nativeSource(rel):
+		return hardenSource(path, rel)
+	default:
+		return nil, nil
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasSuffix(rel, ".go") {
+		return exempt(src, rules.doc(path, rel, src)), nil
+	}
+	found, err := rules.goFile(path, rel, src)
+	if err != nil {
+		return nil, err
+	}
+	return exempt(src, found), nil
+}
+
+// noqa matches a line that asks to be left alone, by that word.
+var noqa = regexp.MustCompile(`\bnoqa\b`)
+
+// exempt is the findings less those on a line of the source that says
+// noqa, code or comment, whatever the rule. every finding is on a line
+// of the source it was made from.
+func exempt(src []byte, found []Finding) []Finding {
+	lines := strings.Split(string(src), "\n")
+	var out []Finding
+	for _, one := range found {
+		at := one.line - count.Origin
+		if noqa.MatchString(lines[at]) {
+			continue
+		}
+		out = append(out, one)
+	}
+	return out
+}
+
+// staticcheck runs staticcheck over the tree and keeps the finding lines.
+// a missing staticcheck is itself a finding.
+func staticcheck(dir string) []Finding {
+	sc := Tool("staticcheck")
 	if sc == "" {
-		out = append(out, Finding{
-			File: "staticcheck",
-			Rule: "staticcheck",
-			Text: "staticcheck did not run and its findings are " +
+		return []Finding{{
+			file: "staticcheck",
+			rule: "staticcheck",
+			text: "staticcheck did not run and its findings are " +
 				"unknown; go install honnef.co/go/tools/cmd/" +
 				"staticcheck@latest",
-		})
+		}}
 	}
-	if sc != "" {
-		cmd := exec.Command(sc, "./...")
-		cmd.Dir = dir
-		b, _ := cmd.CombinedOutput()
-		body := strings.TrimSpace(string(b))
-		for _, line := range strings.Split(body, "\n") {
-			// only lines that match finding are kept. others are
-			// ignored.
-			if finding.MatchString(line) {
-				out = append(
-					out,
-					Finding{
-						File: "staticcheck",
-						Rule: "staticcheck",
-						Text: line,
-					},
-				)
-			}
+	cmd := exec.Command(sc, "./...")
+	cmd.Dir = dir
+	said, _ := cmd.CombinedOutput()
+	var out []Finding
+	body := strings.TrimSpace(string(said))
+	for _, line := range strings.Split(body, "\n") {
+		if finding.MatchString(line) {
+			out = append(out, Finding{
+				file: "staticcheck",
+				rule: "staticcheck",
+				text: line,
+			})
 		}
 	}
-	kept := make([]Finding, 0, len(out))
-	for _, f := range out {
-		if l.allowed(f.File, f.Rule) {
+	return out
+}
+
+// kept is the findings after removing allowed ones, sorted by file and line.
+func (rules Lint) kept(found []Finding) []Finding {
+	out := make([]Finding, count.Nothing, len(found))
+	for _, one := range found {
+		if rules.allowed(one.file, one.rule) {
 			continue
 		}
-		kept = append(kept, f)
+		out = append(out, one)
 	}
-	out = kept
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].File != out[j].File {
-			return out[i].File < out[j].File
-		}
-		return out[i].Line < out[j].Line
-	})
-	return out, nil
+	slices.SortStableFunc(out, byPlace)
+	return out
+}
+
+// byPlace orders findings by file, then line, as slices.SortStableFunc
+// asks.
+func byPlace(one, other Finding) int {
+	const same = 0 // defined by strings.Compare: equal strings
+	if by := strings.Compare(one.file, other.file); by != same {
+		return by
+	}
+	return cmp.Compare(one.line, other.line)
 }
 
 // allowSaid maps the word a config uses for a rule to the word a finding
@@ -466,26 +582,29 @@ var allowSaid = map[string]string{
 	"exclaim":  "exclamation",
 }
 
-// allowKnown is every rule a finding can carry. a rule not in this list
-// is refused when the config is read.
+// allowKnown is every rule a finding can carry. any other is refused when
+// the config is read.
 var allowKnown = map[string]bool{
 	"width": true, "height": true, "paragraph": true,
 	"shouting": true, "uncommented": true, "word": true,
 	"print": true, "exclamation": true, "tests": true,
+	"chain": true, "commas": true, "opener": true, "history": true,
+	"harden": true,
 }
 
-// finding matches a staticcheck finding, written file:line:col then text.
-// anything else it writes is a warning about its own run.
+// finding matches staticcheck's format. anything else is a warning.
 var finding = regexp.MustCompile(`^[^ ]+:[0-9]+:[0-9]+: `)
 
-// tool returns the path of a linter, or an empty string if none is found. it
-// looks on the PATH, then in `GOBIN` and `GOPATH/bin`.
-func tool(name string) string {
-	if p, err := exec.LookPath(name); err == nil {
-		return p
+// Tool returns the path of a tool, or an empty string if none is
+// found. it looks on the path, then where go env says binaries go and
+// in the bin under go's own path, so a go install has the same say as
+// a brew install. game's harden pass finds its analyzers the same way.
+func Tool(name string) string {
+	if found, err := exec.LookPath(name); err == nil {
+		return found
 	}
-	for _, v := range []string{"GOBIN", "GOPATH"} {
-		out, err := exec.Command("go", "env", v).Output()
+	for _, setting := range []string{"GOBIN", "GOPATH"} {
+		out, err := exec.Command("go", "env", setting).Output()
 		if err != nil {
 			continue
 		}
@@ -493,7 +612,7 @@ func tool(name string) string {
 		if dir == "" {
 			continue
 		}
-		if v == "GOPATH" {
+		if setting == "GOPATH" {
 			dir = filepath.Join(dir, "bin")
 		}
 		at := filepath.Join(dir, name)
@@ -505,8 +624,8 @@ func tool(name string) string {
 }
 
 // allowed checks if a file is exempt from a rule.
-func (l Lint) allowed(file, rule string) bool {
-	for _, name := range l.allow[file] {
+func (rules Lint) allowed(file, rule string) bool {
+	for _, name := range rules.allow[file] {
 		if name == rule {
 			return true
 		}
@@ -514,184 +633,194 @@ func (l Lint) allowed(file, rule string) bool {
 	return false
 }
 
-// Failed is whether any finding is one to fix.
-func Failed(fs []Finding) bool {
-	for _, f := range fs {
-		if !f.Look {
-			return true
-		}
-	}
-	return false
-}
-
-// goFile is the rules for one go file.
-func (l Lint) goFile(path, rel string) ([]Finding, error) {
+// goFile lints one go file for an uncommented function, a print outside
+// main, the banned words, the width, long comment paragraphs and
+// shouting. a generated file is left alone.
+func (rules Lint) goFile(
+	path, rel string, src []byte,
+) ([]Finding, error) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
-	var out []Finding
-	for _, cg := range file.Comments {
-		if strings.HasPrefix(cg.Text(), "Code generated") {
+	for _, group := range file.Comments {
+		if strings.HasPrefix(group.Text(), "Code generated") {
 			return nil, nil
 		}
 	}
-	isMain := file.Name.Name == "main"
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || !l.Comments {
-			continue
-		}
-		if fn.Doc == nil || strings.TrimSpace(fn.Doc.Text()) == "" {
-			out = append(
-				out,
-				Finding{
-					rel,
-					fset.Position(fn.Pos()).Line,
-					"uncommented",
-					fn.Name.Name +
-						" has no comment above it",
-					false,
-				},
-			)
-		}
+	out := rules.uncommented(fset, file, rel)
+	if rules.print && file.Name.Name != "main" {
+		out = append(out, rules.prints(fset, file, rel)...)
 	}
-	if l.Print && !isMain {
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if ok && pkg.Name == "fmt" &&
-				strings.HasPrefix(sel.Sel.Name, "Print") {
-				why := "fmt." + sel.Sel.Name +
-					" outside main: a library returns " +
-					"and a daemon logs"
-				at := fset.Position(call.Pos()).Line
-				found := Finding{
-					rel, at, "bare print", why, false,
-				}
-				out = append(out, found)
-			}
-			return true
-		})
-	}
-	src, _ := os.ReadFile(path)
 	lines := strings.Split(string(src), "\n")
-	for i, line := range lines {
-		if l.words != nil {
-			if m := l.words.FindString(line); m != "" {
-				out = append(
-					out,
-					Finding{rel, i + 1, "word", m, false},
-				)
-			}
-		}
-		if w := width(line); l.Width > 0 && w > l.Width &&
-			!tagged.MatchString(line) &&
-			!imported(line) &&
-			!allowedHere(lines, i, "width") {
-			look := !strings.HasPrefix(
-				strings.TrimSpace(line),
-				"//",
-			)
-			out = append(
-				out,
-				Finding{
-					rel,
-					i + 1,
-					"width",
-					fmt.Sprintf("%d columns", w),
-					look,
-				},
-			)
+	out = append(out, rules.goLines(lines, rel)...)
+	if count.Positive(rules.paragraph) {
+		for _, group := range file.Comments {
+			more := rules.commentParagraphs(fset, group, rel)
+			out = append(out, more...)
 		}
 	}
-	if l.Paragraph > 0 {
-		for _, cg := range file.Comments {
-			out = append(out, l.commentParagraphs(fset, cg, rel)...)
-		}
+	if rules.shout {
+		out = append(out, rules.shouts(fset, file, rel)...)
 	}
-	if !l.Shout {
-		return out, nil
+	if rules.harden {
+		out = append(out, harden(fset, file, rel)...)
 	}
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			at := fset.Position(c.Pos()).Line
-			for _, line := range strings.Split(c.Text, "\n") {
-				if blocky(line) {
-					continue
-				}
-				for _, w := range shouted(line) {
-					out = append(
-						out,
-						Finding{
-							rel,
-							at,
-							"shouting",
-							w,
-							true,
-						},
-					)
-				}
-			}
-		}
-	}
+	out = append(out, rules.habits(fset, file, rel)...)
 	return out, nil
 }
 
-// blocky checks if a line is code rather than prose.
-//
-// go treats indented lines in doc comments as code, like markdown
-// fences. a usage line holds argument names, settings, or branches.
-//
-// the shout rule stops at indents, like it stops at fences.
+// uncommented finds functions without a comment above them.
+func (rules Lint) uncommented(
+	fset *token.FileSet,
+	file *ast.File,
+	rel string,
+) []Finding {
+	if !rules.comments {
+		return nil
+	}
+	var out []Finding
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if fn.Doc == nil || strings.TrimSpace(fn.Doc.Text()) == "" {
+			at := fset.Position(fn.Pos()).Line
+			out = append(out, Report(rel, at, "uncommented",
+				fn.Name.Name+" has no comment above it"))
+		}
+	}
+	return out
+}
+
+// prints is every fmt.Print outside package main. a library returns and
+// a daemon logs.
+func (rules Lint) prints(
+	fset *token.FileSet,
+	file *ast.File,
+	rel string,
+) []Finding {
+	printing := &printing{fset: fset, rel: rel}
+	ast.Inspect(file, printing.visit)
+	return printing.out
+}
+
+// printing is a walk of one file for fmt.Print calls, and what it
+// found.
+type printing struct {
+	fset *token.FileSet
+	rel  string
+	out  []Finding
+}
+
+// visit reads one node: a call of fmt.Print or its kin is a finding.
+func (walk *printing) visit(node ast.Node) bool {
+	call, ok := node.(*ast.CallExpr)
+	if !ok {
+		return true
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return true
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if ok && pkg.Name == "fmt" && strings.HasPrefix(sel.Sel.Name, "Print") {
+		why := "fmt." + sel.Sel.Name +
+			" outside main: a library returns " +
+			"and a daemon logs"
+		at := walk.fset.Position(call.Pos()).Line
+		found := Report(walk.rel, at, "bare print", why)
+		walk.out = append(walk.out, found)
+	}
+	return true
+}
+
+// goLines is the banned words and the width, line by line. wide code is a
+// look and a wide comment is to fix. struct tags, import paths and lines an
+// allow comment covers are let by.
+func (rules Lint) goLines(lines []string, rel string) []Finding {
+	var out []Finding
+	for i, line := range lines {
+		if rules.words != nil {
+			if word := rules.words.FindString(line); word != "" {
+				at := count.Next(i)
+				out = append(out, Report(rel, at, "word", word))
+			}
+		}
+		wide := width(line)
+		if rules.tooWide(wide) &&
+			!tagged.MatchString(line) &&
+			!imported(line) &&
+			!allowedHere(lines, i, "width") {
+			trimmed := strings.TrimSpace(line)
+			columns := fmt.Sprintf("%d columns", wide)
+			at := count.Next(i)
+			found := looked(rel, at, "width", columns)
+			if strings.HasPrefix(trimmed, "//") {
+				found = Report(rel, at, "width", columns)
+			}
+			out = append(out, found)
+		}
+	}
+	return out
+}
+
+// tooWide is whether a line's width breaks the rule, when there is one.
+func (rules Lint) tooWide(wide int) bool {
+	return count.Positive(rules.width) && wide > rules.width
+}
+
+// shouts is every run of capitals in a comment, as a look. indented lines
+// are left alone.
+func (rules Lint) shouts(
+	fset *token.FileSet,
+	file *ast.File,
+	rel string,
+) []Finding {
+	var out []Finding
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			at := fset.Position(comment.Pos()).Line
+			for _, line := range strings.Split(comment.Text, "\n") {
+				if blocky(line) {
+					continue
+				}
+				for _, word := range shouted(line) {
+					out = append(out, Finding{
+						rel, at, "shouting", word, true,
+					})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// blocky checks if a comment line is indented, which go treats as code,
+// like a markdown fence.
 func blocky(line string) bool {
-	t := strings.TrimSpace(line)
+	trimmed := strings.TrimSpace(line)
 	for _, mark := range []string{"//", "/*", "*"} {
-		if strings.HasPrefix(t, mark) {
-			t = strings.TrimPrefix(t, mark)
+		if strings.HasPrefix(trimmed, mark) {
+			trimmed = strings.TrimPrefix(trimmed, mark)
 			break
 		}
 	}
-	return strings.HasPrefix(t, "\t") || strings.HasPrefix(t, "    ")
+	return strings.HasPrefix(trimmed, "\t") ||
+		strings.HasPrefix(trimmed, "    ")
 }
 
-// doc is the rules for one markdown file.
-func (l Lint) doc(path, rel string) ([]Finding, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var out []Finding
-	lines := strings.Split(strings.TrimRight(string(src), "\n"), "\n")
-	if l.Rows > 0 && strings.EqualFold(filepath.Base(path), "README.md") {
-		if n := len(lines) - header(lines); n > l.Rows {
-			out = append(
-				out,
-				Finding{
-					rel,
-					len(lines),
-					"height",
-					fmt.Sprintf(
-						"%d lines of prose; a readme "+
-							"fits %d",
-						n,
-						l.Rows,
-					),
-					false,
-				},
-			)
-		}
-	}
-	if l.Paragraph > 0 {
-		out = append(out, l.docParagraphs(lines, rel)...)
+// doc lints one markdown file for height, paragraphs, banned words,
+// exclamations, width and shouting. code blocks and the header's art are
+// left alone.
+func (rules Lint) doc(path, rel string, src []byte) []Finding {
+	body := strings.TrimRight(string(src), "\n")
+	lines := strings.Split(body, "\n")
+	out := rules.height(path, rel, lines)
+	if count.Positive(rules.paragraph) {
+		out = append(out, rules.docParagraphs(lines, rel)...)
 	}
 	code := false
 	art := header(lines)
@@ -700,230 +829,250 @@ func (l Lint) doc(path, rel string) ([]Finding, error) {
 			code = !code
 			continue
 		}
-		if code {
+		// the header is a picture, not wrapped, so it is skipped.
+		if code || i < art {
 			continue
 		}
-		// the header is a picture and not wrapped. it is already
-		// exempt from height and width limits.
-		if i < art {
-			continue
-		}
-		if l.words != nil {
-			if m := l.words.FindString(line); m != "" {
-				out = append(
-					out,
-					Finding{rel, i + 1, "word", m, false},
-				)
-			}
-		}
-		if l.Exclaim && strings.Contains(line, "!") &&
-			!strings.Contains(line, "![") &&
-			!strings.Contains(line, "!=") {
-			out = append(
-				out,
-				Finding{
-					rel,
-					i + 1,
-					"exclamation",
-					strings.TrimSpace(line),
-					false,
-				},
-			)
-		}
-		if w := width(line); l.Width > 0 && w > l.Width &&
-			!strings.HasPrefix(line, "|") &&
-			!strings.Contains(line, "](") {
-			out = append(
-				out,
-				Finding{
-					rel,
-					i + 1,
-					"width",
-					fmt.Sprintf("%d columns", w),
-					false,
-				},
-			)
-		}
-		if l.Shout && !strings.HasPrefix(line, "    ") &&
-			!strings.HasPrefix(line, "\t") {
-			for _, w := range shouted(line) {
-				out = append(
-					out,
-					Finding{
-						rel,
-						i + 1,
-						"shouting",
-						w,
-						true,
-					},
-				)
-			}
+		at := count.Next(i)
+		out = append(out, rules.docLine(rel, at, line)...)
+	}
+	return out
+}
+
+// height is a readme taller than the rule, its header not counted.
+func (rules Lint) height(path, rel string, lines []string) []Finding {
+	readme := strings.EqualFold(filepath.Base(path), "README.md")
+	if count.None(rules.rows) || !readme {
+		return nil
+	}
+	tall := len(lines) - header(lines)
+	if tall <= rules.rows {
+		return nil
+	}
+	return []Finding{Report(rel, len(lines), "height", fmt.Sprintf(
+		"%d lines of prose; a readme fits %d", tall, rules.rows))}
+}
+
+// docLine lints one line of prose. it finds a banned word, an
+// exclamation that is not an image or a not-equals, a width past the
+// rule that is not a table row or a link, and shouting outside an
+// indented block.
+func (rules Lint) docLine(rel string, at int, line string) []Finding {
+	var out []Finding
+	if rules.words != nil {
+		if word := rules.words.FindString(line); word != "" {
+			out = append(out, Report(rel, at, "word", word))
 		}
 	}
-	return out, nil
+	if rules.exclaim && strings.Contains(line, "!") &&
+		!strings.Contains(line, "![") &&
+		!strings.Contains(line, "!=") {
+		said := strings.TrimSpace(line)
+		out = append(out, Report(rel, at, "exclamation", said))
+	}
+	wide := width(line)
+	if rules.tooWide(wide) &&
+		!strings.HasPrefix(line, "|") &&
+		!strings.Contains(line, "](") {
+		columns := fmt.Sprintf("%d columns", wide)
+		out = append(out, Report(rel, at, "width", columns))
+	}
+	if rules.shout && !strings.HasPrefix(line, "    ") &&
+		!strings.HasPrefix(line, "\t") {
+		for _, word := range shouted(line) {
+			out = append(out, Finding{
+				rel, at, "shouting", word, true,
+			})
+		}
+	}
+	return out
 }
 
 // long is the finding for a paragraph that runs past the rule.
-func (l Lint) long(rel string, start, n int) Finding {
+func (rules Lint) long(rel string, start, ran int) Finding {
 	return Finding{
 		rel,
 		start,
 		"paragraph",
-		fmt.Sprintf("%d lines; a paragraph holds %d", n, l.Paragraph),
+		fmt.Sprintf("%d lines; a paragraph holds %d", ran,
+			rules.paragraph),
 		false,
 	}
 }
 
-// listItem matches a line that starts a list item, which is a paragraph of
-// its own.
+// listItem matches a line starting a list item.
 var listItem = regexp.MustCompile(`^\s*([-*+]|\d+[.)])\s`)
 
-// docParagraphs returns the paragraphs of prose in a markdown file that run
-// past the rule. a blank line or a list item ends one. code, tables and
-// headings are skipped.
-func (l Lint) docParagraphs(lines []string, rel string) []Finding {
-	var out []Finding
-	start, n, fence := 0, 0, false
-	flush := func() {
-		if n > l.Paragraph {
-			out = append(out, l.long(rel, start, n))
-		}
-		n = 0
+// paragraphs is a run of prose being measured against the rule: the
+// line it started at, how many lines it has run to, and the findings
+// for the ones that ran past.
+type paragraphs struct {
+	rules Lint
+	rel   string
+	start int
+	ran   int
+	out   []Finding
+}
+
+// ends is the end of a paragraph: one that ran past the rule is a
+// finding, and the count starts again.
+func (prose *paragraphs) ends() {
+	if prose.ran > prose.rules.paragraph {
+		prose.out = append(prose.out,
+			prose.rules.long(prose.rel, prose.start, prose.ran))
 	}
+	prose.ran = count.Nothing
+}
+
+// line is one more line of the paragraph, started at this line when it
+// is the first.
+func (prose *paragraphs) line(at int) {
+	if count.None(prose.ran) {
+		prose.start = at
+	}
+	prose.ran++
+}
+
+// docParagraphs finds prose paragraphs in markdown that break the rule.
+// blank lines or lists end them. code, tables and headings are skipped.
+func (rules Lint) docParagraphs(lines []string, rel string) []Finding {
+	prose := &paragraphs{rules: rules, rel: rel}
+	var fence bool
 	for i, line := range lines {
-		t := strings.TrimSpace(line)
+		trimmed := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(t, "```"):
-			flush()
+		case strings.HasPrefix(trimmed, "```"):
+			prose.ends()
 			fence = !fence
 		case fence,
-			t == "",
-			strings.HasPrefix(t, "|"),
-			strings.HasPrefix(t, "#"),
-			n == 0 &&
+			trimmed == "",
+			strings.HasPrefix(trimmed, "|"),
+			strings.HasPrefix(trimmed, "#"),
+			count.None(prose.ran) &&
 				(strings.HasPrefix(line, "    ") ||
 					strings.HasPrefix(line, "\t")):
-			flush()
+			prose.ends()
 		default:
 			if listItem.MatchString(line) {
-				flush()
+				prose.ends()
 			}
-			if n == 0 {
-				start = i + 1
-			}
-			n++
+			prose.line(count.Next(i))
 		}
 	}
-	flush()
-	return out
+	prose.ends()
+	return prose.out
 }
 
 // commentParagraphs returns the paragraphs in one comment group that run past
 // the rule. a blank line or a list item ends one. indented lines, go: lines
 // and nolint lines are skipped.
-func (l Lint) commentParagraphs(
+func (rules Lint) commentParagraphs(
 	fset *token.FileSet,
 	cg *ast.CommentGroup,
 	rel string,
 ) []Finding {
-	var out []Finding
-	start, n := 0, 0
-	flush := func() {
-		if n > l.Paragraph {
-			out = append(out, l.long(rel, start, n))
-		}
-		n = 0
-	}
-	for _, c := range cg.List {
-		if !strings.HasPrefix(c.Text, "//") {
-			flush()
+	prose := &paragraphs{rules: rules, rel: rel}
+	for _, comment := range cg.List {
+		if !strings.HasPrefix(comment.Text, "//") {
+			prose.ends()
 			continue
 		}
-		body := strings.TrimPrefix(c.Text, "//")
-		t := strings.TrimSpace(body)
+		body := strings.TrimPrefix(comment.Text, "//")
+		trimmed := strings.TrimSpace(body)
 		switch {
-		case t == "",
+		case trimmed == "",
 			strings.HasPrefix(body, "\t"),
 			strings.HasPrefix(body, "  "),
 			strings.HasPrefix(
-				t,
+				trimmed,
 				"go:",
 			),
-			strings.HasPrefix(t, "nolint"):
-			flush()
+			strings.HasPrefix(trimmed, "nolint"):
+			prose.ends()
 		default:
 			if listItem.MatchString(body) {
-				flush()
+				prose.ends()
 			}
-			if n == 0 {
-				start = fset.Position(c.Pos()).Line
-			}
-			n++
+			at := fset.Position(comment.Pos()).Line
+			prose.line(at)
 		}
 	}
-	flush()
-	return out
+	prose.ends()
+	return prose.out
 }
+
+// tabStop is how far a tab reaches, defined as go prints one: eight
+// columns.
+const tabStop = 8
 
 // width is a line's width in columns, tabs counted as go prints them.
 func width(line string) int {
-	n := 0
-	for _, r := range line {
-		if r == '\t' {
-			n += 8 - n%8
+	var columns int
+	for _, char := range line {
+		if char == '\t' {
+			columns += tabStop - columns%tabStop
 		} else {
-			n++
+			columns++
 		}
 	}
-	return n
+	return columns
 }
 
 // tracked lists the files git tracks or would track under dir, except
-// testdata. an error means dir is not a repository.
+// testdata. it errors when dir is no repository.
 func tracked(dir string) ([]string, error) {
 	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--others",
 		"--exclude-standard")
 	cmd.Dir = dir
-	b, err := cmd.Output()
+	listed, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for _, f := range strings.Split(string(b), "\x00") {
-		if f == "" || strings.HasPrefix(f, "testdata/") ||
-			strings.Contains(f, "/testdata/") {
+	for _, file := range strings.Split(string(listed), "\x00") {
+		if file == "" || strings.HasPrefix(file, "testdata/") ||
+			strings.Contains(file, "/testdata/") {
 			continue
 		}
-		out = append(out, f)
+		out = append(out, file)
 	}
 	return out, nil
 }
 
 // walked lists every file under dir, skipping what a repo would ignore.
 func walked(dir string) ([]string, error) {
-	var out []string
-	err := filepath.WalkDir(
-		dir,
-		func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			name := d.Name()
-			if d.IsDir() {
-				if path != dir &&
-					(strings.HasPrefix(name, ".") ||
-						name == "bin" ||
-						name == "build" ||
-						name == "testdata" ||
-						name == "vendor") {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			rel, _ := filepath.Rel(dir, path)
-			out = append(out, rel)
-			return nil
-		},
-	)
-	return out, err
+	walking := &walking{dir: dir}
+	err := filepath.WalkDir(dir, walking.visit)
+	return walking.out, err
+}
+
+// walking is a walk of a tree with no git, and the files found so far.
+type walking struct {
+	dir string
+	out []string
+}
+
+// visit reads one entry: a directory a repo would ignore is skipped,
+// and a file is listed from the tree's root.
+func (walk *walking) visit(path string, entry os.DirEntry, err error) error {
+	if err != nil {
+		return err
+	}
+	name := entry.Name()
+	if entry.IsDir() {
+		if path != walk.dir && ignored(name) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	rel, _ := filepath.Rel(walk.dir, path)
+	walk.out = append(walk.out, rel)
+	return nil
+}
+
+// ignored is whether a directory's name is one a repo would ignore:
+// hidden, or what is built, vendored or test data.
+func ignored(name string) bool {
+	return strings.HasPrefix(name, ".") || name == "bin" ||
+		name == "build" || name == "testdata" || name == "vendor"
 }

@@ -1,0 +1,52 @@
+# numbers.yaml: the numbers config's tests are held to, by name
+# (ruling 4, 2026-10-18: a test's numbers live in a config, and
+# the test is held to it).
+
+numbers:
+  - name: some-checks
+    value: 1000
+    says: a checks count past the default, so a parse that keeps it is seen to keep it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-projects
+    value: 3
+    says: the most project blocks a drawn dotfile holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-set-names
+    value: 2
+    says: the most set lines a drawn project block holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-excludes
+    value: 3
+    says: the most exclude lines a drawn dotfile holds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-checks
+    value: 100000
+    says: the most checks a drawn rapid checks line names, past anything a run would want
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-most-lines-before
+    value: 5
+    says: the most lines before a drawn unknown key, so the line number in the refusal varies
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: known-keys-least
+    value: 10
+    says: the fewest keys config may know before the vim syntax test is not telling anything
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: known-lints-least
+    value: 5
+    says: the fewest lint rules config may know before the vim syntax test is not telling anything
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a

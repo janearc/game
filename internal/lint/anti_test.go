@@ -1,0 +1,264 @@
+package lint_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/lint"
+)
+
+func lintRuleError(t *testing.T, rule config.Rule) {
+	t.Helper()
+	if _, err := lint.Describe([]config.Rule{rule}); err == nil {
+		t.Fatalf("invalid rule accepted: %v", rule)
+	}
+}
+
+func noHardening(t *testing.T, name, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	writeGo(t, dir, name, body)
+	found, err := lint.Hardened(dir)
+	if err != nil || len(found) != count.Nothing {
+		t.Fatalf("clean source returned %v, %v", found, err)
+	}
+}
+
+func TestAntiLintWidthZero(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("width", "0"))
+}
+
+func TestAntiLintWidthNegative(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("width", "-1"))
+}
+
+func TestAntiLintWidthNonNumeric(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("width", "wide"))
+}
+
+func TestAntiLintRowsZero(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("rows", "0"))
+}
+
+func TestAntiLintRowsNonNumeric(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("rows", "many"))
+}
+
+func TestAntiLintCommasNonNumeric(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("commas", "many"))
+}
+
+func TestAntiLintParagraphZero(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("paragraph", "0"))
+}
+
+func TestAntiLintParagraphNegative(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("paragraph", "-1"))
+}
+
+func TestAntiLintUnknownRule(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("unknown"))
+}
+
+func TestAntiLintAllowMissingRule(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("allow", "a.go"))
+}
+
+func TestAntiLintAllowUnknownRule(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("allow", "a.go", "unknown"))
+}
+
+func TestAntiLintWordsEmpty(t *testing.T) {
+	t.Parallel()
+	lintRuleError(t, config.Ruled("words"))
+}
+
+func TestAntiLintOwnSyscall(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "own.go", "package main\nfunc f(){ own.Setuid(0) }\n")
+}
+
+func TestAntiLintOwnExec(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "own.go", "package main\nfunc f(){ own.Command(\"sudo\") }\n")
+}
+
+func TestAntiLintExecEcho(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "exec.go", "package main\nimport \"os/exec\"\n"+
+		"func f(){ exec.Command(\"echo\") }\n")
+}
+
+func TestAntiLintSafeGoChmod(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "chmod.go", "package main\nimport \"os\"\n"+
+		"func f(){ os.Chmod(\"x\", 0600) }\n")
+}
+
+func TestAntiLintSafeTLS(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "tls.go", "package main\nimport \"crypto/tls\"\n"+
+		"var c = tls.Config{InsecureSkipVerify: false}\n")
+}
+
+func TestAntiLintCComment(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "comment.c", "// setuid(0) is not a call\n")
+}
+
+func TestAntiLintCDirective(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "directive.c", "#define setuid(x) evil(x)\n")
+}
+
+func TestAntiLintSafeCChmod(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "chmod.c", "void f(void) { chmod(\"x\", 0644); }\n")
+}
+
+func TestAntiLintSafeSwiftPermission(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "perm.swift", "FileManager.default.createFile(atPath: p, "+
+		"contents: d, attributes: [.posixPermissions: 0o644])\n")
+}
+
+func TestAntiLintSafeSwiftProcess(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "proc.swift", "task.launchPath = \"/usr/bin/echo\"\n")
+}
+
+func TestAntiLintSafeCOpen(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "open.c", "void f(void) { open(\"x\", O_CREAT, 0644); }\n")
+}
+
+func TestAntiLintSafeNativeCall(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "print.c", "void f(void) { printf(\"setuid\"); }\n")
+}
+
+func TestAntiLintMalformedGo(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeGo(t, dir, "bad.go", "package\n")
+	if _, err := lint.Hardened(dir); err == nil {
+		t.Fatal("malformed Go was hardened")
+	}
+}
+
+func TestAntiLintVerdictEmpty(t *testing.T) {
+	t.Parallel()
+	fix, look, err := lint.Verdict(nil)
+	if err != nil || fix != count.Nothing || look != count.Nothing {
+		t.Fatalf("empty verdict is %d, %d, %v", fix, look, err)
+	}
+}
+
+func TestAntiLintLookIsNotAFix(t *testing.T) {
+	t.Parallel()
+	fix, look, err := lint.Verdict([]lint.Finding{looked(t)})
+	if fix != count.Nothing || look != count.One || err == nil {
+		t.Fatalf("a look counted as %d to fix, %d to look at, %v", fix, look, err)
+	}
+}
+
+func TestAntiLintEmptyRules(t *testing.T) {
+	t.Parallel()
+	if !described(t).Empty() {
+		t.Fatal("no rules is not empty")
+	}
+}
+
+func TestAntiLintHardenOff(t *testing.T) {
+	t.Parallel()
+	if described(t).Harden() {
+		t.Fatal("harden is on without its rule")
+	}
+}
+
+func TestAntiLintNoqaSuppressed(t *testing.T) {
+	t.Parallel()
+	linter := described(t, config.Ruled("width", "5"))
+	found := ranOn(t, linter, map[string]string{
+		"a.go": "package a // wide comment noqa\n",
+		"b.go": "package b // wide comment\n",
+	})
+	if len(found) != count.One || found[count.First].File() != "b.go" {
+		t.Fatalf("noqa let one off and not the other: %v", found)
+	}
+}
+
+func TestAntiLintNoqaFirstLine(t *testing.T) {
+	t.Parallel()
+	linter := described(t, config.Ruled("width", "5"))
+	found := ranOn(t, linter, map[string]string{"a.go": "package a // noqa\n"})
+	if len(found) != count.Nothing {
+		t.Fatalf("first-line noqa finding kept %v", found)
+	}
+}
+
+func TestAntiLintToolMissing(t *testing.T) {
+	t.Parallel()
+	if got := lint.Tool("not-a-real-lint-tool"); got != "" {
+		t.Fatalf("missing tool is %q", got)
+	}
+}
+
+func TestAntiLintGeneratedFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeGo(t, dir, "generated.go", "// Code generated by test. DO NOT EDIT.\n"+
+		"package generated\nfunc MissingComment() {}\n")
+	found, err := described(t, config.Ruled("comments")).Run(dir)
+	if err != nil || len(found) != count.Nothing {
+		t.Fatalf("generated file returned %v, %v", found, err)
+	}
+}
+
+func TestAntiLintTestsLeftAlone(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "setuid_test.go", "package main\nimport \"syscall\"\n"+
+		"func TestF(){ syscall.Setuid(0) }\n")
+}
+
+func TestAntiLintNonNativeFile(t *testing.T) {
+	t.Parallel()
+	noHardening(t, "notes.txt", "setuid(0)\n")
+}
+
+func TestAntiLintRunMalformedGo(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeGo(t, dir, "bad.go", "package\n")
+	if _, err := described(t, config.Ruled("width", "80")).Run(dir); err == nil {
+		t.Fatal("malformed Go passed the lint")
+	}
+}
+
+func TestAntiLintHardenedFileThatIsGone(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q")
+	writeGo(t, dir, "gone.go", "package gone\n")
+	gitIn(t, dir, "add", "gone.go")
+	if err := os.Remove(filepath.Join(dir, "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lint.Hardened(dir); err == nil {
+		t.Fatal("a file git lists and the disk lacks was hardened")
+	}
+}

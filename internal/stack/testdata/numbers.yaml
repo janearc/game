@@ -1,0 +1,87 @@
+# numbers.yaml: the numbers stack's tests are held to, by name ( ruling 4,
+# 2026-10-18: a test's numbers live in a config, and the test is held to it).
+
+numbers:
+  - name: default-tries
+    value: 3
+    says: the attempts a transient failure gets by default, the first and two more, as stack.go's threeTries holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the default was written
+
+  - name: given-parallel
+    value: 4
+    says: a parallel count past the least, so the settled test sees a given count is kept
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: given-tries
+    value: 5
+    says: a try count past the least, so the settled test sees a given count is kept
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: in-place-tries
+    value: 2
+    says: the tries a build gets in the parts tests, the failure and the try again, so flaky and transient both show
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: clone-tries
+    value: 3
+    says: the tries the clone test gives a clone, so two waits arrive between three attempts
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: backoff-first-seconds
+    value: 1
+    says: the backoff's first ceiling, a second, as stack.go's firstWait holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the ceiling was written
+
+  - name: backoff-doubled-seconds
+    value: 2
+    says: the backoff's ceiling doubled once
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the ceiling was written
+
+  - name: backoff-doubled-fourth-seconds
+    value: 16
+    says: the backoff's ceiling at the last doubling of a second that stays under the cap
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the ceiling was written
+
+  - name: backoff-longest-seconds
+    value: 30
+    says: the backoff's last ceiling, thirty seconds, as stack.go's longestWait holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the ceiling was written
+
+  - name: backoff-last-under
+    value: 4
+    says: the attempt whose doubling of a second is the last still under the thirty-second cap
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: backoff-past-cap
+    value: 9
+    says: an attempt well past the cap, so the ceiling the test sees is the cap itself
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: lint-reported
+    value: 2
+    says: the lint findings the good member's build reports, which the row keeps
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: lint-counted
+    value: 3
+    says: the lint findings the scripted child reports, which the row keeps
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: transient-tries
+    value: 2
+    says: the tries a member that fails once transiently takes, the failure and the retry
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a

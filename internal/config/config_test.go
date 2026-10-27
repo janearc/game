@@ -1,11 +1,22 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/count"
 )
+
+// parsed is src read as the dotfile, or as a repository's .game.
+func parsed(src string, dotfile bool) (config.Config, error) {
+	var cfg config.Config
+	err := cfg.Parse(strings.NewReader(src), "the.file", "/h", dotfile)
+	return cfg, err
+}
 
 // every form a line may take, and every key.
 func TestParseForms(t *testing.T) {
@@ -21,22 +32,25 @@ exclude 'internal/bridge/'
 lint width 80
 lint words foo bar
 `
-	var c Config
-	if err := c.Parse(strings.NewReader(src), "f", "/h", true); err != nil {
+	cfg, err := parsed(src, true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Author != "Ada" || c.Words != "/h/w.txt" ||
-		c.Projects["x"].Road != "../x-private.git" ||
-		c.Projects["x"].Dist != "https://example.com/x-dist.git" ||
-		c.Projects["x"].Set["CONTACT"] != "ada@example.com" ||
-		len(c.Exclude) != 2 ||
-		c.Exclude[1] != "internal/bridge/" {
-		t.Fatalf("got %+v", c)
+	roads, dists := cfg.Remotes(false), cfg.Remotes(true)
+	second := count.Next(count.First)
+	if cfg.Author() != "Ada" || cfg.Words() != "/h/w.txt" ||
+		roads["x"] != "../x-private.git" ||
+		dists["x"] != "https://example.com/x-dist.git" ||
+		len(cfg.Exclude()) != count.Next(count.One) ||
+		cfg.Exclude()[second] != "internal/bridge/" {
+		t.Fatalf("got %+v", cfg)
 	}
-	if len(c.Lint) != 2 || c.Lint[0].Name != "width" ||
-		c.Lint[0].Args[0] != "80" ||
-		len(c.Lint[1].Args) != 2 {
-		t.Fatalf("lint: %+v", c.Lint)
+	rules := cfg.Lint()
+	if len(rules) != count.Next(count.One) ||
+		rules[count.First].Name() != "width" ||
+		rules[count.First].Args()[count.First] != "80" ||
+		len(rules[second].Args()) != count.Next(count.One) {
+		t.Fatalf("lint: %+v", rules)
 	}
 }
 
@@ -59,18 +73,14 @@ func TestParseRefuses(t *testing.T) {
 		// the block already names the project
 		"project x\n\troad x ../x.git\n",
 	} {
-		var c Config
-		err := c.Parse(strings.NewReader(src), "the.file", "/h", true)
+		_, err := parsed(src, true)
 		if err == nil {
 			t.Errorf("%q parsed", src)
 			continue
 		}
 		if !strings.HasPrefix(err.Error(), "the.file:") {
-			t.Errorf(
-				"%q: error does not name the file and line: %v",
-				src,
-				err,
-			)
+			t.Errorf("%q: error does not name the file and line: %v",
+				src, err)
 		}
 	}
 }
@@ -78,68 +88,97 @@ func TestParseRefuses(t *testing.T) {
 // the dotfile then the repository's .game; the repository wins, except
 // the word list, which it may not set; missing files are fine.
 func TestLoadOrder(t *testing.T) {
-	home, repo := t.TempDir(), t.TempDir()
-	c, err := Load(home, home, repo)
+	home, tree := t.TempDir(), t.TempDir()
+	cfg, err := config.Load(home, home, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Projects) != 0 ||
-		!strings.HasSuffix(c.Words, "sweep.words") {
-		t.Fatalf("defaults: %+v", c)
+	roads := cfg.Remotes(false)
+	if count.Positive(len(roads)) ||
+		!strings.HasSuffix(cfg.Words(), "sweep.words") {
+		t.Fatalf("defaults: %+v", cfg)
 	}
-	os.MkdirAll(filepath.Join(home, ".config", "game"), 0o755)
-	os.WriteFile(
-		filepath.Join(home, ".config", "game", "config"),
-		[]byte(
-			"author Ada\nproject a\n\tdist ../a.git\nwords "+
-				"~/mine\nexclude one/\nlint width 80\nlint "+
-				"comments\n",
-		),
-		0o644,
-	)
-	os.WriteFile(
-		filepath.Join(repo, ".game"),
-		[]byte("name a\nwords ~/theirs\nexclude two/\n"),
-		0o644,
-	)
-	c, err = Load(home, home, repo)
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	dotDir := filepath.Join(home, ".config", "game")
+	if err := os.MkdirAll(dotDir, openDir); err != nil {
+		t.Fatal(err)
+	}
+	dot := []byte("author Ada\nproject a\n\tdist ../a.git\nwords " +
+		"~/mine\nexclude one/\nlint width 80\nlint comments\n")
+	if err := os.WriteFile(filepath.Join(dotDir, "config"), dot,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	game := []byte("name a\nwords ~/theirs\nexclude two/\n")
+	if err := os.WriteFile(filepath.Join(tree, ".game"), game,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(home, home, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mine, held := c.Mine()
-	if c.Author != "Ada" || c.Name != "a" || !held ||
-		mine.Dist != filepath.Join(home, "..", "a.git") &&
-			mine.Dist != "../a.git" ||
-		c.Words != filepath.Join(home, "mine") ||
-		len(c.Exclude) != 2 {
-		t.Fatalf("merged: %+v", c)
+	mine, heldBy := cfg.Mine()
+	if cfg.Author() != "Ada" || cfg.Named() != "a" || !heldBy ||
+		mine.Dist() != filepath.Join(home, "..", "a.git") &&
+			mine.Dist() != "../a.git" ||
+		cfg.Words() != filepath.Join(home, "mine") ||
+		len(cfg.Exclude()) != count.Next(count.One) {
+		t.Fatalf("merged: %+v", cfg)
 	}
-	if len(c.Lint) != 2 {
-		t.Fatalf(
-			"a repository that describes no lint should "+
-				"get the dotfile's two, got %v",
-			c.Lint,
-		)
+	if len(cfg.Lint()) != count.Next(count.One) {
+		t.Fatalf("a repository that describes no lint should "+
+			"get the dotfile's two, got %v", cfg.Lint())
 	}
-	os.WriteFile(
-		filepath.Join(repo, ".game"),
-		[]byte("lint print\n"),
-		0o644,
-	)
-	c, _ = Load(home, home, repo)
-	if len(c.Lint) != 1 || c.Lint[0].Name != "print" {
-		t.Fatalf(
-			"a repository's lint should replace the "+
-				"dotfile's, got %v",
-			c.Lint,
-		)
+}
+
+// dottedHome is a home with the dotfile written, and a tree beside it
+// with the .game given.
+func dottedHome(t *testing.T, game string) (string, string) {
+	t.Helper()
+	home, tree := t.TempDir(), t.TempDir()
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	dotDir := filepath.Join(home, ".config", "game")
+	if err := os.MkdirAll(dotDir, openDir); err != nil {
+		t.Fatal(err)
 	}
-	os.WriteFile(
-		filepath.Join(repo, ".game"),
-		[]byte("colour blue\n"),
-		0o644,
-	)
-	if _, err := Load(home, home, repo); err == nil ||
+	dot := []byte("author Ada\nproject a\n\tdist ../a.git\nwords " +
+		"~/mine\nexclude one/\nlint width 80\nlint comments\n")
+	if err := os.WriteFile(filepath.Join(dotDir, "config"), dot,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, ".game"),
+		[]byte(game), openFile); err != nil {
+		t.Fatal(err)
+	}
+	return home, tree
+}
+
+// a repository's lint replaces the dotfile's, and an unknown key in
+// the .game refuses the load.
+func TestLoadOrderTheRepositoryWins(t *testing.T) {
+	home, tree := dottedHome(t, "name a\nwords ~/theirs\nexclude two/\n")
+	openFile := os.FileMode(0o644)
+	printRule := []byte("lint print\n")
+	if err := os.WriteFile(filepath.Join(tree, ".game"), printRule,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(home, home, tree)
+	if len(cfg.Lint()) != count.One ||
+		cfg.Lint()[count.First].Name() != "print" {
+		t.Fatalf("a repository's lint should replace the dotfile's, "+
+			"got %v", cfg.Lint())
+	}
+	unknown := []byte("colour blue\n")
+	if err := os.WriteFile(filepath.Join(tree, ".game"), unknown,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(home, home, tree); err == nil ||
 		!strings.Contains(err.Error(), "unknown key") {
 		t.Fatalf("an unknown key in .game loaded: %v", err)
 	}
@@ -148,29 +187,33 @@ func TestLoadOrder(t *testing.T) {
 // a target is a name, a directory and steps in order; a second line
 // with the same name is the next step; a line without :: is refused.
 func TestTargets(t *testing.T) {
-	var c Config
 	src := "target ghostty . :: sh tools/toolchain\ntarget ghostty " +
 		"~/src/g :: ~/zig build -Doptimize=ReleaseFast\n"
-	if err := c.Parse(strings.NewReader(src), "f", "/h", true); err != nil {
+	cfg, err := parsed(src, true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Targets) != 1 || len(c.Targets[0].Steps) != 2 {
-		t.Fatalf("got %+v", c.Targets)
+	second := count.Next(count.First)
+	if len(cfg.Targets()) != count.One ||
+		len(cfg.Targets()[count.First].Steps()) != count.Next(count.One) {
+		t.Fatalf("got %+v", cfg.Targets())
 	}
-	if a, b := c.Targets[0].Steps[0], c.Targets[0].Steps[1]; a.Dir != "." ||
-		b.Dir != "/h/src/g" ||
-		b.Args[0] != "/h/zig" {
-		t.Fatalf("each step keeps its own directory: %+v %+v", a, b)
+	steps := cfg.Targets()[count.First].Steps()
+	first, next := steps[count.First], steps[second]
+	if first.Dir() != "." || next.Dir() != "/h/src/g" ||
+		next.Args()[count.First] != "/h/zig" {
+		t.Fatalf("each step keeps its own directory: %+v %+v",
+			first, next)
 	}
-	var bad Config
-	if err := bad.Parse(strings.NewReader("target x ~/y zig build\n"), "f", "/h", true); err == nil {
+	_, err = parsed("target x ~/y zig build\n", true)
+	if err == nil {
 		t.Error("a target without :: parsed")
 	}
-	var run Config
-	if err := run.Parse(strings.NewReader("run ghostty . :: open -na build/app/T.app --args -e bin/daffy\n"), "f", "/h", true); err != nil ||
-		len(run.Runs) != 1 ||
-		run.Runs[0].Name != "ghostty" {
-		t.Fatalf("run: %+v %v", run.Runs, err)
+	runs, err := parsed("run ghostty . :: open -na build/app/T.app "+
+		"--args -e bin/daffy\n", true)
+	if err != nil || len(runs.Runs()) != count.One ||
+		runs.Runs()[count.First].Name() != "ghostty" {
+		t.Fatalf("run: %+v %v", runs.Runs(), err)
 	}
 }
 
@@ -179,48 +222,69 @@ func TestTargets(t *testing.T) {
 // Env carries only what was declared, and Missing names what was not
 // given, with its reason.
 func TestNeedsAndSet(t *testing.T) {
-	home, repo := t.TempDir(), t.TempDir()
-	os.MkdirAll(filepath.Join(home, ".config", "game"), 0o755)
+	home, tree := t.TempDir(), t.TempDir()
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	dotDir := filepath.Join(home, ".config", "game")
+	if err := os.MkdirAll(dotDir, openDir); err != nil {
+		t.Fatal(err)
+	}
 	dot := "set CONTACT ada@example.com\nset UNRELATED secret\n"
-	os.WriteFile(
-		filepath.Join(home, ".config", "game", "config"),
-		[]byte(dot),
-		0o644,
-	)
+	if err := os.WriteFile(filepath.Join(dotDir, "config"), []byte(dot),
+		openFile); err != nil {
+		t.Fatal(err)
+	}
 	game := "needs CONTACT who the providers can reach\n" +
 		"needs REGION where it runs\n"
-	os.WriteFile(filepath.Join(repo, ".game"), []byte(game), 0o644)
-	c, err := Load(home, home, repo)
+	if err := os.WriteFile(filepath.Join(tree, ".game"), []byte(game),
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(home, home, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Env()
-	if len(env) != 1 || env[0] != "CONTACT=ada@example.com" {
-		t.Errorf(
-			"env should carry only the declared, given setting: %v",
-			env,
-		)
+	env := cfg.Env()
+	if len(env) != count.One || env[count.First] != "CONTACT=ada@example.com" {
+		t.Errorf("env should carry only the declared, given setting: %v",
+			env)
 	}
-	miss := c.Missing()
-	if len(miss) != 1 || miss[0].Name != "REGION" ||
-		miss[0].Why != "where it runs" {
+	miss := cfg.Missing()
+	if len(miss) != count.One || miss[count.First].Name() != "REGION" ||
+		miss[count.First].Why() != "where it runs" {
 		t.Errorf("missing: %+v", miss)
 	}
-	os.WriteFile(
-		filepath.Join(repo, ".game"),
-		[]byte("set CONTACT me\n"),
-		0o644,
-	)
-	if _, err := Load(home, home, repo); err == nil {
+}
+
+// a value in a repository and a declaration in the dotfile are
+// refused.
+func TestNeedsAndSetRefuseTheWrongSide(t *testing.T) {
+	home, tree := t.TempDir(), t.TempDir()
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	dotDir := filepath.Join(home, ".config", "game")
+	if err := os.MkdirAll(dotDir, openDir); err != nil {
+		t.Fatal(err)
+	}
+	value := []byte("set CONTACT me\n")
+	if err := os.WriteFile(filepath.Join(tree, ".game"), value,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(home, home, tree); err == nil {
 		t.Error("a value in a repository loaded")
 	}
-	os.WriteFile(filepath.Join(repo, ".game"), []byte(""), 0o644)
-	os.WriteFile(
-		filepath.Join(home, ".config", "game", "config"),
-		[]byte("needs X why\n"),
-		0o644,
-	)
-	if _, err := Load(home, home, repo); err == nil {
+	empty := []byte("")
+	if err := os.WriteFile(filepath.Join(tree, ".game"), empty,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	declared := []byte("needs X why\n")
+	if err := os.WriteFile(filepath.Join(dotDir, "config"), declared,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(home, home, tree); err == nil {
 		t.Error("a declaration in the dotfile loaded")
 	}
 }
@@ -228,16 +292,13 @@ func TestNeedsAndSet(t *testing.T) {
 // remotes are the builder's: a repository that names one is refused, and
 // a dotfile that names a project in .game is refused.
 func TestRemotesAreTheBuilders(t *testing.T) {
-	var repo Config
-	if err := repo.Parse(strings.NewReader("dist x ../x.git\n"), ".game", "/h", false); err == nil {
+	if _, err := parsed("dist x ../x.git\n", false); err == nil {
 		t.Error("a repository declared a remote")
 	}
-	var dot Config
-	if err := dot.Parse(strings.NewReader("name x\n"), "config", "/h", true); err == nil {
+	if _, err := parsed("name x\n", true); err == nil {
 		t.Error("the dotfile named a project")
 	}
-	var bad Config
-	if err := bad.Parse(strings.NewReader("road x\n"), "config", "/h", true); err == nil {
+	if _, err := parsed("road x\n", true); err == nil {
 		t.Error("a road with no url parsed")
 	}
 }
@@ -246,40 +307,53 @@ func TestRemotesAreTheBuilders(t *testing.T) {
 // the dotfile does not describe has no block at all, which is what makes
 // it a local build.
 func TestProjectBlocksAndLocalOnly(t *testing.T) {
-	home, repo := t.TempDir(), t.TempDir()
-	os.MkdirAll(filepath.Join(home, ".config", "game"), 0o755)
-	os.WriteFile(
-		filepath.Join(home, ".config", "game", "config"),
-		[]byte("set CONTACT ada@example.com\n"+
-			"project a\n\tdist ../a.git\n"+
-			"\tset CONTACT a@example.com\n"+
-			"project b\n\troad ../b.git\n"),
-		0o644,
-	)
-	os.WriteFile(filepath.Join(repo, ".game"), []byte("name a\n"), 0o644)
-	c, err := Load(home, home, repo)
+	home, tree := t.TempDir(), t.TempDir()
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	dotDir := filepath.Join(home, ".config", "game")
+	if err := os.MkdirAll(dotDir, openDir); err != nil {
+		t.Fatal(err)
+	}
+	dot := []byte("set CONTACT ada@example.com\n" +
+		"project a\n\tdist ../a.git\n" +
+		"\tset CONTACT a@example.com\n" +
+		"project b\n\troad ../b.git\n")
+	if err := os.WriteFile(filepath.Join(dotDir, "config"), dot,
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, ".game"),
+		[]byte("name a\n"), openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(home, home, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Set["CONTACT"] != "a@example.com" {
-		t.Errorf("the block's value did not win: %q", c.Set["CONTACT"])
+	if cfg.Set()["CONTACT"] != "a@example.com" {
+		t.Errorf("the block's value did not win: %q", cfg.Set()["CONTACT"])
 	}
-	if len(c.Remotes(false)) != 1 || len(c.Remotes(true)) != 1 {
-		t.Errorf("remotes: %v %v", c.Remotes(false), c.Remotes(true))
+	if len(cfg.Remotes(false)) != count.One ||
+		len(cfg.Remotes(true)) != count.One {
+		t.Errorf("remotes: %v %v", cfg.Remotes(false),
+			cfg.Remotes(true))
 	}
 
 	// the same dotfile, a repository the builder does not describe
 	other := t.TempDir()
-	os.WriteFile(filepath.Join(other, ".game"), []byte("name c\n"), 0o644)
-	c, err = Load(home, home, other)
+	if err := os.WriteFile(filepath.Join(other, ".game"),
+		[]byte("name c\n"), openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(home, home, other)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, held := c.Mine(); held {
+	if _, heldBy := cfg.Mine(); heldBy {
 		t.Error("an undescribed project has a block")
 	}
-	if c.Set["CONTACT"] != "ada@example.com" {
-		t.Errorf("the dotfile's value was lost: %q", c.Set["CONTACT"])
+	if cfg.Set()["CONTACT"] != "ada@example.com" {
+		t.Errorf("the dotfile's value was lost: %q", cfg.Set()["CONTACT"])
 	}
 }
 
@@ -290,32 +364,33 @@ func TestStrictest(t *testing.T) {
 	// the words are built from pieces: this file is swept too, and a
 	// listed word in it is a finding like any other.
 	one, two := "hyper"+"scaler", "blazing"+"-fast"
-	bender := []Rule{{Name: "width", Args: []string{"80"}},
-		{Name: "words", Args: []string{one}}}
-	flipr := []Rule{{Name: "width", Args: []string{"72"}},
-		{Name: "shout", Args: nil},
-		{Name: "words", Args: []string{two, one}}}
-	game := []Rule{{Name: "width", Args: []string{"100"}},
-		{Name: "paragraph", Args: []string{"4"}}}
-	got := Strictest(bender, flipr, game)
-	held := map[string]Rule{}
-	for _, r := range got {
-		held[r.Name] = r
+	bender := []config.Rule{config.Ruled("width", "80"),
+		config.Ruled("words", one)}
+	flipr := []config.Rule{config.Ruled("width", "72"),
+		config.Ruled("shout"), config.Ruled("words", two, one)}
+	game := []config.Rule{config.Ruled("width", "100"),
+		config.Ruled("paragraph", "4")}
+	got := config.Strictest(bender, flipr, game)
+	byName := map[string]config.Rule{}
+	for _, rule := range got {
+		byName[rule.Name()] = rule
 	}
-	if held["width"].Args[0] != "72" {
-		t.Errorf("width is %v, want the narrowest", held["width"].Args)
+	if byName["width"].Args()[count.First] != "72" {
+		t.Errorf("width is %v, want the narrowest",
+			byName["width"].Args())
 	}
-	if _, on := held["shout"]; !on {
+	if _, on := byName["shout"]; !on {
 		t.Error("a rule one member holds was dropped")
 	}
-	if held["paragraph"].Args[0] != "4" {
-		t.Errorf("paragraph is %v", held["paragraph"].Args)
+	if byName["paragraph"].Args()[count.First] != "4" {
+		t.Errorf("paragraph is %v", byName["paragraph"].Args())
 	}
-	if len(held["words"].Args) != 2 {
-		t.Errorf("words is %v, want the union", held["words"].Args)
+	if len(byName["words"].Args()) != count.Next(count.One) {
+		t.Errorf("words is %v, want the union", byName["words"].Args())
 	}
-	if len(got) != 4 {
-		t.Errorf("got %d rules, want 4: %v", len(got), got)
+	names := []string{"width", "shout", "words", "paragraph"}
+	if len(got) != len(names) {
+		t.Errorf("got %d rules, want %d: %v", len(got), len(names), got)
 	}
 }
 
@@ -324,108 +399,129 @@ func TestStrictest(t *testing.T) {
 // machine's user. without this an agent reading a shared road is sent to
 // the same path under its own directory, where nothing is.
 func TestLoadReadsOneHomeAndExpandsAnother(t *testing.T) {
-	whose, home, repo := t.TempDir(), t.TempDir(), t.TempDir()
-	if err := os.MkdirAll(
-		filepath.Join(whose, ".config", "game"), 0o755,
-	); err != nil {
+	whose, home, tree := t.TempDir(), t.TempDir(), t.TempDir()
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	at := filepath.Join(whose, ".config", "game")
+	if err := os.MkdirAll(at, openDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		filepath.Join(whose, ".config", "game", "config"),
-		[]byte("project thing\n\troad ~/roads/thing.git\n"),
-		0o644,
-	); err != nil {
+	dot := []byte("project thing\n\troad ~/roads/thing.git\n")
+	if err := os.WriteFile(filepath.Join(at, "config"), dot,
+		openFile); err != nil {
 		t.Fatal(err)
 	}
-	c, err := Load(whose, home, repo)
+	cfg, err := config.Load(whose, home, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(home, "roads", "thing.git")
-	if got := c.Projects["thing"].Road; got != want {
+	if got := cfg.Remotes(false)["thing"]; got != want {
 		t.Errorf("road %q, want %q", got, want)
 	}
 }
 
-// TestNameComesFromOnePlace: the name a tree is looked up by in the
-// builder's config is the one its messages use, and it is found in this
-// order: .game's name line, go.mod's module, the directory. a tree with
-// no .game must still find its block, a folder called something else
-// must not change the answer, and a config with no block must say
-// exactly what was tried.
+// the name a tree is looked up by in the builder's config is the one
+// its messages use, found in this order: .game's name line, go.mod's
+// module, the directory.
 func TestNameComesFromOnePlace(t *testing.T) {
 	home := t.TempDir()
 	dotfile := filepath.Join(home, ".config", "game", "config")
-	os.MkdirAll(filepath.Dir(dotfile), 0o755)
-	os.WriteFile(
-		dotfile,
-		[]byte("project miami\n\troad ../miami-road.git\n"+
-			"project kingfisher\n\troad ../k-road.git\n"),
-		0o644,
-	)
-	tree := func(dir, mod, game string) string {
-		t.Helper()
-		at := filepath.Join(t.TempDir(), dir)
-		os.MkdirAll(at, 0o755)
-		if mod != "" {
-			os.WriteFile(
-				filepath.Join(at, "go.mod"),
-				[]byte("module "+mod+"\n\ngo 1.25\n"),
-				0o644,
-			)
-		}
-		if game != "" {
-			os.WriteFile(
-				filepath.Join(at, ".game"), []byte(game), 0o644,
-			)
-		}
-		return at
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	if err := os.MkdirAll(filepath.Dir(dotfile), openDir); err != nil {
+		t.Fatal(err)
+	}
+	dot := []byte("project miami\n\troad ../miami-road.git\n" +
+		"project kingfisher\n\troad ../k-road.git\n")
+	if err := os.WriteFile(dotfile, dot, openFile); err != nil {
+		t.Fatal(err)
 	}
 
 	// no .game at all: the module names it, and the block is found.
-	c, err := Load(home, home, tree("miami", "github.com/x/miami", ""))
+	cfg, err := config.Load(home, home,
+		tree(t, "miami", "github.com/x/miami", "", openDir, openFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, held := c.Mine(); !held || c.Named != "miami" ||
-		!strings.Contains(c.NamedBy, "go.mod") {
-		t.Fatalf("no .game: named %q by %q, held %v",
-			c.Named, c.NamedBy, held)
+	if _, heldBy := cfg.Mine(); !heldBy || cfg.Named() != "miami" ||
+		!strings.Contains(cfg.NoBlock().Error(), "go.mod") {
+		t.Fatalf("no .game: named %q, held %v: %v",
+			cfg.Named(), heldBy, cfg.NoBlock())
 	}
 
 	// a folder called something else: the module still wins.
-	c, _ = Load(home, home, tree("miami-dist", "github.com/x/miami", ""))
-	if _, held := c.Mine(); !held || c.Named != "miami" {
-		t.Fatalf("folder differs: named %q, held %v", c.Named, held)
+	cfg, _ = config.Load(home, home,
+		tree(t, "miami-dist", "github.com/x/miami", "", openDir, openFile))
+	if _, heldBy := cfg.Mine(); !heldBy || cfg.Named() != "miami" {
+		t.Fatalf("folder differs: named %q, held %v", cfg.Named(), heldBy)
 	}
 
 	// a module with a major version suffix is still its own name.
-	c, _ = Load(home, home, tree("k", "github.com/x/kingfisher/v2", ""))
-	if _, held := c.Mine(); !held || c.Named != "kingfisher" {
-		t.Fatalf("v2 suffix: named %q, held %v", c.Named, held)
+	cfg, _ = config.Load(home, home,
+		tree(t, "k", "github.com/x/kingfisher/v2", "", openDir, openFile))
+	if _, heldBy := cfg.Mine(); !heldBy || cfg.Named() != "kingfisher" {
+		t.Fatalf("v2 suffix: named %q, held %v", cfg.Named(), heldBy)
 	}
 
-	// a .game with a name line still wins, since support stays for now.
-	c, _ = Load(home, home, tree("x", "github.com/x/other", "name miami\n"))
-	if _, held := c.Mine(); !held || c.Named != "miami" ||
-		!strings.Contains(c.NamedBy, ".game") {
-		t.Fatalf(".game name: named %q by %q, held %v",
-			c.Named, c.NamedBy, held)
+}
+
+// a .game with a name line still wins over the module, since support
+// stays for now; and nothing to go on but the folder is named by the
+// folder, and said to be.
+func TestNameFromDotGameAndFolder(t *testing.T) {
+	home := t.TempDir()
+	dotfile := filepath.Join(home, ".config", "game", "config")
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	if err := os.MkdirAll(filepath.Dir(dotfile), openDir); err != nil {
+		t.Fatal(err)
+	}
+	dot := []byte("project miami\n\troad ../miami-road.git\n")
+	if err := os.WriteFile(dotfile, dot, openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(home, home,
+		tree(t, "x", "github.com/x/other", "name miami\n", openDir,
+			openFile))
+	if _, heldBy := cfg.Mine(); !heldBy || cfg.Named() != "miami" ||
+		!strings.Contains(cfg.NoBlock().Error(), ".game") {
+		t.Fatalf(".game name: named %q, held %v: %v",
+			cfg.Named(), heldBy, cfg.NoBlock())
 	}
 
 	// nothing to go on but the folder: it is named, and said to be.
-	c, _ = Load(home, home, tree("plain", "", ""))
-	if c.Named != "plain" || !strings.Contains(c.NamedBy, "directory") {
-		t.Fatalf("bare folder: named %q by %q", c.Named, c.NamedBy)
+	cfg, _ = config.Load(home, home,
+		tree(t, "plain", "", "", openDir, openFile))
+	if cfg.Named() != "plain" ||
+		!strings.Contains(cfg.NoBlock().Error(), "directory") {
+		t.Fatalf("bare folder: named %q: %v", cfg.Named(),
+			cfg.NoBlock())
 	}
+}
 
-	// a config with no block for it: the error says the name, where it
-	// came from, which file was read, and what the file does have.
-	c, _ = Load(home, home, tree("wren", "github.com/x/wren", ""))
-	if _, held := c.Mine(); held {
+// a config with no block for a tree refuses it by name, saying where
+// the name came from, which file was read, and what the file does
+// have; one with no blocks at all says so.
+func TestNoBlockSaysWhatWasTried(t *testing.T) {
+	home := t.TempDir()
+	dotfile := filepath.Join(home, ".config", "game", "config")
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	if err := os.MkdirAll(filepath.Dir(dotfile), openDir); err != nil {
+		t.Fatal(err)
+	}
+	dot := []byte("project miami\n\troad ../miami-road.git\n" +
+		"project kingfisher\n\troad ../k-road.git\n")
+	if err := os.WriteFile(dotfile, dot, openFile); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(home, home,
+		tree(t, "wren", "github.com/x/wren", "", openDir, openFile))
+	if _, heldBy := cfg.Mine(); heldBy {
 		t.Fatal("found a block for wren in a config with none")
 	}
-	err = c.NoBlock()
+	err := cfg.NoBlock()
 	if err == nil {
 		t.Fatal("no error for a project with no block")
 	}
@@ -440,9 +536,90 @@ func TestNameComesFromOnePlace(t *testing.T) {
 
 	// the same, against a config with no blocks at all.
 	empty := t.TempDir()
-	c, _ = Load(empty, empty, tree("wren", "github.com/x/wren", ""))
-	if err := c.NoBlock(); err == nil ||
+	cfg, _ = config.Load(empty, empty,
+		tree(t, "wren", "github.com/x/wren", "", openDir, openFile))
+	if err := cfg.NoBlock(); err == nil ||
 		!strings.Contains(err.Error(), "no project blocks") {
 		t.Fatalf("an empty config should say it has no blocks: %v", err)
+	}
+}
+
+// tree is a directory named dir, with a go.mod of the module and a
+// .game of the text where given.
+func tree(
+	t *testing.T,
+	dir, mod, game string,
+	openDir, openFile os.FileMode,
+) string {
+	t.Helper()
+	at := filepath.Join(t.TempDir(), dir)
+	if err := os.MkdirAll(at, openDir); err != nil {
+		t.Fatal(err)
+	}
+	if mod != "" {
+		module := filepath.Join(at, "go.mod")
+		if err := os.WriteFile(module,
+			[]byte("module "+mod+"\n\ngo 1.25\n"), openFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if game != "" {
+		dot := filepath.Join(at, ".game")
+		if err := os.WriteFile(dot, []byte(game), openFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return at
+}
+
+// a stack member's name is a directory game removes and clones again
+// under bin/stack and bin/patch, so it may not climb out or be hidden.
+func TestAStackMemberIsOnePlainDirectory(t *testing.T) {
+	for _, name := range []string{"..", ".hidden", "a/b", `a\b`, "a*",
+		"b?", "c[1]"} {
+		_, err := parsed("stack "+name+" main\n", false)
+		if err == nil || !strings.Contains(err.Error(), "plain directory") {
+			t.Errorf("%q: %v, want it refused", name, err)
+		}
+	}
+	cfg, err := parsed("stack crush v0.98.1\n", false)
+	stack := cfg.Stack()
+	if err != nil || len(stack) != count.One ||
+		stack[count.First].Name() != "crush" {
+		t.Errorf("a plain name: %v, %v", stack, err)
+	}
+}
+
+// a stack member marked theirs is someone else's code: its line keeps its
+// name and ref, and the member is known as theirs. one not marked is not.
+func TestAStackMemberMayBeTheirs(t *testing.T) {
+	cfg, err := parsed("stack crush v0.98.1 theirs\nstack keel main\n",
+		false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, member := range cfg.Stack() {
+		got = append(got, member.Name()+" "+member.Ref())
+	}
+	if want := []string{"crush v0.98.1", "keel main"}; !slices.Equal(got, want) {
+		t.Errorf("stack: %v, want %v", got, want)
+	}
+	if !cfg.IsTheirs("crush") || cfg.IsTheirs("keel") ||
+		cfg.IsTheirs("nobody") {
+		t.Errorf("theirs: %v", cfg.Theirs())
+	}
+}
+
+// a stack line takes a name, a ref, and theirs or nothing after it.
+func TestAStackLineIsRefusedPastItsWords(t *testing.T) {
+	for _, src := range []string{
+		"stack crush\n", "stack crush v0.98.1 mine\n",
+		"stack crush v0.98.1 theirs too\n",
+	} {
+		_, err := parsed(src, false)
+		if err == nil || !strings.Contains(err.Error(), "stack wants") {
+			t.Errorf("%q: %v, want it refused", src, err)
+		}
 	}
 }

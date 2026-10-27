@@ -25,27 +25,62 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/sweep"
 )
 
-// main bakes the never-words into the game directory it is run from.
+// build and built are the commit and its time, stamped in when game
+// builds never into bin/. go run, as bootstrap.sh does it, leaves them
+// as they are here.
+var (
+	build       = "dev"
+	built       = ""
+	stampedWho  = ""
+	stampedSids = ""
+)
+
+// main bakes the never-words into the game directory it is run from, or
+// answers --age.
 func main() {
-	said, err := bake(config.Whose(), os.Getenv("HOME"), ".")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "never:", err)
-		os.Exit(1)
-	}
-	fmt.Println("never:", said)
+	args := os.Args[count.Next(count.First):]
+	code := runNeverPzm(args, config.Whose(), os.Getenv("HOME"), ".",
+		os.Stdin, os.Stdout, os.Stderr)
+	exit(code)
 }
 
-// bake writes the hashes for the list game's config names, read as game
-// reads it, into the game directory at dir, and says what it did.
+// never's exit codes, as the shell has defined them: success, and the
+// list could not be baked.
+const (
+	exitOK     = 0 // defined by the shell: success
+	exitFailed = 1 // defined by convention: the bake failed
+)
+
+// run is never given its arguments, whose config to read, the home it
+// is in, the game directory, and where to say things. it is the exit
+// code: failed when the list could not be baked.
+func run(args []string, whose, home, dir string, out, errs io.Writer) int {
+	if answer(args, out) {
+		return exitOK
+	}
+	said, err := bake(whose, home, dir)
+	if err != nil {
+		fmt.Fprintln(errs, "never:", err)
+		return exitFailed
+	}
+	fmt.Fprintln(out, "never:", said)
+	return exitOK
+}
+
+// bake writes the never-word hashes into the game directory and says what
+// it did.
 func bake(whose, home, dir string) (string, error) {
 	cfg, err := config.Load(whose, home, dir)
 	if err != nil {
@@ -57,17 +92,20 @@ func bake(whose, home, dir string) (string, error) {
 			"directory", at)
 	}
 	out := filepath.Join(at, "hashes")
-	list := sweep.Words(cfg.Words)
-	if len(list) == 0 {
+	list, err := sweep.Words(cfg.Words())
+	if err != nil {
+		return "", err
+	}
+	if count.None(len(list)) {
 		if err := os.Remove(out); err != nil &&
 			!errors.Is(err, fs.ErrNotExist) {
 			return "", err
 		}
 		return fmt.Sprintf("no never-words at %s, so none are "+
 			"baked in; this game will build, and refuse to "+
-			"release", cfg.Words), nil
+			"release", cfg.Words()), nil
 	}
-	salt, err := saltBeside(cfg.Words)
+	salt, err := saltBeside(cfg.Words())
 	if err != nil {
 		return "", err
 	}
@@ -75,16 +113,37 @@ func bake(whose, home, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(out, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(out, []byte(body), ownerOnly); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%d never-words baked in, as hashes", len(list)), nil
 }
 
-// saltBeside is the salt kept beside the list, made the first time it is
-// asked for: sixteen random bytes, written where only this user can read
-// them.
+// ownerOnly is the mode the hashes and the salt are written with: the
+// owner alone reads and writes them, defined as 0600 in sys/stat.h's
+// bits.
+const ownerOnly = 0o600
+
+// saltBytes is how long a fresh salt is: sixteen random bytes, defined
+// here as more than anyone will guess.
+const saltBytes = 16
+
+// exit ends the process after a bake or an answer.
+//
+//ninja:vow decoy a test cannot let os.Exit end its own process
+var exit = os.Exit
+
+// saltBeside gives the salt kept beside the list, making it on first use.
+// it is sixteen random bytes, readable only by this user.
 func saltBeside(list string) (string, error) {
+	return saltBesideUsing(list, rand.Read)
+}
+
+// saltBesideUsing is saltBeside with the random source given.
+func saltBesideUsing(
+	list string,
+	randomRead func([]byte) (int, error),
+) (string, error) {
 	path := filepath.Join(filepath.Dir(list), "sweep.salt")
 	kept, err := os.ReadFile(path)
 	if err == nil && strings.TrimSpace(string(kept)) != "" {
@@ -93,13 +152,50 @@ func saltBeside(list string) (string, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
-	fresh := make([]byte, 16)
-	if _, err := rand.Read(fresh); err != nil {
+	fresh := make([]byte, saltBytes)
+	if _, err := randomRead(fresh); err != nil {
 		return "", err
 	}
 	salt := hex.EncodeToString(fresh)
-	if err := os.WriteFile(path, []byte(salt+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(salt+"\n"), ownerOnly); err != nil {
 		return "", err
 	}
 	return salt, nil
+}
+
+// answer says this never's age, if that is what it was asked, and says
+// whether it was.
+func answer(args []string, out io.Writer) bool {
+	// the first word is never itself; the flag comes after it
+	after := args[count.Next(count.First):]
+	if count.None(len(after)) || after[count.First] != "--age" {
+		return false
+	}
+	said := age(build, built, now())
+	fmt.Fprintln(out, said)
+	return true
+}
+
+// age says which commit never was built from and how old that commit is,
+// in the words game uses for its own.
+func age(commit, at string, now time.Time) string {
+	if at == "" && commit == "dev" {
+		return "never, built from a tree by go rather than by game: " +
+			"no commit and no commit time in it"
+	}
+	if at == "" {
+		return fmt.Sprintf("never %s, with no commit time in it",
+			commit)
+	}
+	made, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return fmt.Sprintf("never %s, committed at %s", commit, at)
+	}
+	return fmt.Sprintf("never %s, committed %s ago", commit,
+		now.Sub(made).Round(time.Second))
+}
+
+// now is the clock age reads.
+func now() time.Time {
+	return time.Now()
 }

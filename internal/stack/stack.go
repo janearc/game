@@ -10,11 +10,12 @@ package stack
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,22 +23,46 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"github.com/janearc/game/internal/count"
 )
 
 // Member is one repository in a stack, and the tag or branch to build.
 type Member struct {
-	Name string
-	Ref  string
+	name string
+	ref  string
 }
 
+// Named is a member of a stack: the repository's name and the tag or
+// branch to build.
+func Named(name, ref string) Member {
+	return Member{name: name, ref: ref}
+}
+
+// Name is the member's name, which is the directory it is built in.
+func (member Member) Name() string { return member.name }
+
+// Ref is the tag or branch the member is built at.
+func (member Member) Ref() string { return member.ref }
+
 // Event is one line a child writes: a step starting, passing or failing.
+// json reads and writes these fields; they are the wire between a
+// member's verify and the stack.
 type Event struct {
 	Repo  string `json:"repo,omitempty"`
-	Step  string `json:"step"`           // check, test, build, lint
-	State string `json:"state"`          // start, ok, fail
-	Kind  string `json:"kind,omitempty"` // transient or deterministic, on a fail
+	Step  string `json:"step"`
+	State string `json:"state"`
+	Kind  string `json:"kind,omitempty"`
 	Count int    `json:"count,omitempty"`
 	Text  string `json:"text,omitempty"`
+}
+
+// Happened is one event, as a child writes it: the step, its state,
+// the kind of failure when it is one, what it said, and its count.
+func Happened(step, state, kind, text string, counted int) Event {
+	return Event{Step: step, State: state, Kind: kind, Text: cut(text),
+		Count: counted}
 }
 
 // transient matches network errors that may resolve on retry.
@@ -55,259 +80,455 @@ func Kind(output string) string {
 	return "deterministic"
 }
 
-// Failure is what a Fixer is handed: the member, its directory, the step that
-// failed and the child's output.
-type Failure struct {
-	Member
-	Dir  string
-	Step string
-	Text string
-}
-
-// Fixer is the seam where an agent repairs a deterministic failure. It
-// returns the name of a branch holding a fix, or an empty name to give up.
+// Fixer is the seam where an agent repairs a deterministic failure. it is
+// given the member that failed, its directory, the failed step and what
+// the step said, and returns the name of a branch holding a fix, or an
+// empty name to give up.
 type Fixer interface {
-	Fix(ctx context.Context, f Failure) (branch string, err error)
+	Fix(ctx context.Context, member Member, dir, step, text string) (
+		branch string, err error)
 }
 
-// GiveUp is the Fixer that fixes nothing, the only one game ships.
-type GiveUp struct{}
+// giveUp is the Fixer that fixes nothing, the only one game ships.
+type giveUp struct{}
 
 // Fix gives up.
-func (GiveUp) Fix(context.Context, Failure) (string, error) { return "", nil }
+func (giveUp) Fix(context.Context, Member, string, string, string) (
+	string, error) {
+	return "", nil
+}
+
+// GivingUp is the Fixer that fixes nothing, the only one game ships.
+func GivingUp() Fixer { return giveUp{} }
 
 // Row is one member's outcome, for the table.
 type Row struct {
-	Member
-	Result string // ok, flaky, failed, or fixed on a named branch
-	Failed string // the step that failed, when one did
-	Lint   int
-	Tries  int
-	Text   string
+	member Member
+	result string // ok, flaky, failed, or fixed on a named branch
+	failed string // the step that failed, when one did
+	lint   int
+	tries  int
 }
 
-// Options are what a stack build needs.
+// Name is the member's name.
+func (row Row) Name() string { return row.member.name }
+
+// Result is how the member came out: ok, flaky, failed, or fixed on a
+// named branch.
+func (row Row) Result() string { return row.result }
+
+// Lint is how many findings the member's lint counted.
+func (row Row) Lint() int { return row.lint }
+
+// Options are what a stack build needs. Build makes them with what
+// every build has; the rest is said by a method each.
 type Options struct {
-	Members []Member
-	URL     func(name string) (string, error) // where a member lives
+	members []Member
+	url     func(name string) (string, error) // where a member lives
 	// the directory clones go under
-	Work     string
-	Child    func(dir string) *exec.Cmd // the build a member gets
-	Parallel int
-	// Quiet leaves the members' art out, for a log.
-	Quiet bool
-	Tries int // attempts at a transient failure, clone or build
-	Fixer Fixer
-	Out   io.Writer
-	Sleep func(time.Duration)
+	work  string
+	child func(dir string) *exec.Cmd // the build a member gets
+	// patch lays a member's patches on its fresh clone, before it is
+	// built, and says how many it laid. nil lays none. members already
+	// here are never patched.
+	patch    func(member Member, dir string) (int, error)
+	parallel int
+	// clear is whether the screen is cleared before a card: a terminal is.
+	clear bool
+	tries int // attempts at a transient failure, clone or build
+	fixer Fixer
+	out   io.Writer
+	// sleep waits and jitter is a random wait below a ceiling, for
+	// backoff: the caller owns the clock and the dice.
+	sleep  func(time.Duration)
+	jitter func(ceiling int64) int64
 }
 
-// Run builds every member, at most Parallel at once, and returns their rows
-// in the stack's order. run one at a time, it stops after the first failed
-// row. the error is only for a stack that could not start.
-func Run(ctx context.Context, o Options) ([]Row, error) {
-	if o.Parallel < 1 {
-		// one at a time by default. each member shows its art as it is
-		// reached, and a failure stops the run there.
-		o.Parallel = 1
+// Build is a build of members under work, each by the child the
+// function gives for its directory.
+func Build(members []Member, work string,
+	child func(dir string) *exec.Cmd) Options {
+	return Options{members: members, work: work, child: child}
+}
+
+// From is the options with where each member lives, by name. Without
+// it every member must already be in place.
+func (asked Options) From(url func(name string) (string, error)) Options {
+	asked.url = url
+	return asked
+}
+
+// Patching is the options with what lays a member's patches on its
+// fresh clone and says how many it laid.
+func (asked Options) Patching(
+	patch func(member Member, dir string) (int, error)) Options {
+	asked.patch = patch
+	return asked
+}
+
+// InParallel is the options building that many members at once.
+func (asked Options) InParallel(members int) Options {
+	asked.parallel = members
+	return asked
+}
+
+// Saying is the options writing what happens on out.
+func (asked Options) Saying(out io.Writer) Options {
+	asked.out = out
+	return asked
+}
+
+// Trying is the options giving a transient failure that many attempts.
+func (asked Options) Trying(tries int) Options {
+	asked.tries = tries
+	return asked
+}
+
+// Clearing is the options clearing the screen before each card, which a
+// terminal wants and a log does not.
+func (asked Options) Clearing(clear bool) Options {
+	asked.clear = clear
+	return asked
+}
+
+// Sleeping is the options waiting with the sleep given.
+func (asked Options) Sleeping(sleep func(time.Duration)) Options {
+	asked.sleep = sleep
+	return asked
+}
+
+// Jittered is the options drawing its waits with the jitter given.
+func (asked Options) Jittered(jitter func(ceiling int64) int64) Options {
+	asked.jitter = jitter
+	return asked
+}
+
+// Fixing is the options offering fixes with the fixer given.
+func (asked Options) Fixing(fixer Fixer) Options {
+	asked.fixer = fixer
+	return asked
+}
+
+// oneAtATime is the fewest members built at once, and the count at
+// which the first failure stops the run: defined so.
+const oneAtATime = 1
+
+// threeTries is how many attempts a transient failure gets by default,
+// defined here as the first and two more.
+const threeTries = 3
+
+// settled is the options with defaults filled in. parallel is one,
+// tries is three and out discards.
+func (asked Options) settled() Options {
+	if asked.parallel < oneAtATime {
+		asked.parallel = oneAtATime
 	}
-	if o.Tries < 1 {
-		o.Tries = 3
+	if asked.tries < count.One {
+		asked.tries = threeTries
 	}
-	if o.Fixer == nil {
-		o.Fixer = GiveUp{}
+	if asked.out == nil {
+		asked.out = io.Discard
 	}
-	if o.Sleep == nil {
-		o.Sleep = time.Sleep
+	return asked
+}
+
+// folderMode is the mode the work directory is made with: the owner
+// writes, everyone reads and enters, defined as 0755 in sys/stat.h's
+// bits.
+const folderMode = 0o755
+
+// Run builds every member, at most parallel at once, and returns their
+// rows in the stack's order. one at a time, it stops after the first
+// failed row. the error is only for a stack that could not start.
+func Run(ctx context.Context, asked Options) ([]Row, error) {
+	asked = asked.settled()
+	if asked.sleep == nil || asked.jitter == nil || asked.fixer == nil {
+		return nil, errors.New("a stack build is given Sleeping, " +
+			"Jittered and Fixing: the caller owns the clock, " +
+			"the dice and the fixes")
 	}
-	if o.Out == nil {
-		o.Out = io.Discard
-	}
-	if err := os.MkdirAll(o.Work, 0o755); err != nil {
+	if err := os.MkdirAll(asked.work, folderMode); err != nil {
 		return nil, err
 	}
-	rows := make([]Row, 0, len(o.Members))
 	var mu sync.Mutex
-	if o.Parallel == 1 {
-		// one at a time, each member's art shows as it is reached and
-		// the first failure stops the run.
-		for _, m := range o.Members {
-			o.card(m, &mu)
-			row := o.member(ctx, m, &mu)
+	if asked.parallel == oneAtATime {
+		// each member's art shows as it is reached. the first failure
+		// stops the run.
+		rows := make([]Row, count.Nothing, len(asked.members))
+		for _, member := range asked.members {
+			asked.card(member, &mu)
+			row := asked.member(ctx, member, &mu)
 			rows = append(rows, row)
-			if row.Result == "failed" {
+			if row.result == "failed" {
 				return rows, nil
 			}
 		}
 		return rows, nil
 	}
-	all := make([]Row, len(o.Members))
-	sem := make(chan struct{}, o.Parallel)
-	var wg sync.WaitGroup
-	for i, m := range o.Members {
-		wg.Add(1)
-		go func(i int, m Member) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			all[i] = o.member(ctx, m, &mu)
-		}(i, m)
+	building := &building{
+		options: asked, ctx: ctx, mu: &mu,
+		rows:  make([]Row, len(asked.members)),
+		slots: make(chan struct{}, asked.parallel),
 	}
-	wg.Wait()
-	return all, nil
+	for at, member := range asked.members {
+		building.wg.Add(count.One)
+		go building.one(at, member)
+	}
+	building.wg.Wait()
+	return building.rows, nil
+}
+
+// building is a run of many members at once: the rows each fills in,
+// and the slots that hold how many run together.
+type building struct {
+	options Options
+	ctx     context.Context
+	mu      *sync.Mutex
+	rows    []Row
+	slots   chan struct{}
+	wg      sync.WaitGroup
+}
+
+// one builds one member in a slot, and puts its row in place.
+func (build *building) one(at int, member Member) {
+	defer build.wg.Done()
+	build.slots <- struct{}{}
+	defer build.free()
+	build.rows[at] = build.options.member(build.ctx, member, build.mu)
+}
+
+// free gives a slot back.
+func (build *building) free() {
+	<-build.slots
 }
 
 // art reads a member's card from art/NAME.ansi. NAME is the project name in
 // the member's .game, then the directory name. failing both, a lone .ansi in
 // art/ is used. the bool is false when there is none.
-func (o Options) art(m Member) ([]byte, bool) {
-	dir := filepath.Join(o.Work, m.Name, "art")
-	names := []string{m.Name}
+func (asked Options) art(member Member) ([]byte, bool) {
+	dir := filepath.Join(asked.work, member.name, "art")
+	names := []string{member.name}
 	if game, err := os.ReadFile(
-		filepath.Join(o.Work, m.Name, ".game"),
+		filepath.Join(asked.work, member.name, ".game"),
 	); err == nil {
-		for _, line := range strings.Split(string(game), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "name ") {
-				continue
-			}
-			called := strings.TrimSpace(
-				strings.TrimPrefix(line, "name "),
-			)
+		if called, ok := projectNamed(string(game)); ok {
 			names = append([]string{called}, names...)
-			break
 		}
 	}
-	for _, n := range names {
-		if b, err := os.ReadFile(
-			filepath.Join(dir, n+".ansi"),
-		); err == nil && len(b) > 0 {
-			return b, true
+	for _, name := range names {
+		body, err := os.ReadFile(filepath.Join(dir, name+".ansi"))
+		if err == nil && count.Positive(len(body)) {
+			return body, true
 		}
 	}
 	found, err := filepath.Glob(filepath.Join(dir, "*.ansi"))
-	if err != nil || len(found) != 1 {
+	if err != nil || len(found) != count.One {
 		return nil, false
 	}
-	b, err := os.ReadFile(found[0])
-	if err != nil || len(b) == 0 {
+	body, err := os.ReadFile(found[count.First])
+	if err != nil || count.None(len(body)) {
 		return nil, false
 	}
-	return b, true
+	return body, true
 }
 
-// card writes a member's art unless Quiet is set. on a terminal it clears the
-// screen first. missing or unreadable art is skipped.
-func (o Options) card(m Member, mu *sync.Mutex) {
-	if o.Quiet {
-		return
+// projectNamed is the name a .game gives its project, from its name
+// line, and whether it has one.
+func projectNamed(game string) (string, bool) {
+	for _, line := range strings.Split(game, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "name ") {
+			continue
+		}
+		called := strings.TrimPrefix(line, "name ")
+		return strings.TrimSpace(called), true
 	}
-	b, ok := o.art(m)
+	return "", false
+}
+
+// clearScreen is the terminal's words for a cleared screen with the
+// cursor at its top, as ANSI defines them.
+const clearScreen = "\x1b[H\x1b[2J"
+
+// card writes a member's art. when told to, it clears the screen first.
+// missing or unreadable art is skipped.
+func (asked Options) card(member Member, mu *sync.Mutex) {
+	art, ok := asked.art(member)
 	if !ok {
 		return
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	// one screen at a time: the card for the member being built is the
-	// whole of it. only when a person is watching -- a redirected build
-	// keeps its log, and a stopped build keeps its failure on the
-	// screen, because nothing clears after the last one.
-	if f, ok := o.Out.(*os.File); ok {
-		if fi, err := f.Stat(); err == nil &&
-			fi.Mode()&os.ModeCharDevice != 0 {
-			fmt.Fprint(o.Out, "\x1b[H\x1b[2J")
-		}
+	// the clear is for a terminal only. a redirected build keeps its log,
+	// and a stopped build keeps its failure on screen, as nothing clears
+	// after the last one.
+	if asked.clear {
+		fmt.Fprint(asked.out, clearScreen)
 	}
-	fmt.Fprintf(o.Out, "%s\n\n", strings.TrimRight(string(b), "\n"))
+	card := strings.TrimRight(string(art), "\n")
+	fmt.Fprintf(asked.out, "%s\n\n", card)
 }
 
-// member clones one member and builds it. it retries transient errors, reruns
-// a failed test to tell flaky from failing, and gives other failures to the
-// Fixer.
-func (o Options) member(ctx context.Context, m Member, mu *sync.Mutex) Row {
-	row := Row{Member: m}
-	say := func(format string, a ...any) {
-		mu.Lock()
-		defer mu.Unlock()
-		fmt.Fprintf(
-			o.Out,
-			"stack %s: "+format+"\n",
-			append([]any{m.Name}, a...)...)
-	}
-	dir, url := filepath.Join(o.Work, m.Name), ""
-	if o.URL == nil {
-		// no remote to ask: the members are already here. a member
-		// is whatever sits under its name. one with no go.mod is
-		// checked by its own test target.
+// Clears is whether out is a terminal, which a character device is and a
+// file, a pipe or a buffer is not.
+func Clears(out io.Writer) bool {
+	file, _ := out.(*os.File) // a nil file has no mode, and Stat says so
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != noMode
+}
+
+// noMode is a file mode with no bits set.
+var noMode os.FileMode
+
+// voice is how one member's build says what happens: on the stack's
+// out, under the member's name, one at a time.
+type voice struct {
+	out  io.Writer
+	name string
+	mu   *sync.Mutex
+}
+
+// say writes one line for the member.
+func (said voice) say(format string, args ...any) {
+	said.mu.Lock()
+	defer said.mu.Unlock()
+	fmt.Fprintf(said.out, "stack %s: "+format+"\n",
+		append([]any{said.name}, args...)...)
+}
+
+// placed puts a member under its name. with no remote it must already be
+// there, else it is cloned at its ref. it returns the url used and false if
+// the member could not be placed, with the row saying why.
+func (asked Options) placed(
+	member Member,
+	dir string,
+	row *Row,
+	said voice,
+) (string, bool) {
+	if asked.url == nil {
+		// no remote to ask, so the member must already be here with a
+		// .game. one with no go.mod is checked by its own test target.
 		if _, err := os.Stat(filepath.Join(dir, ".game")); err != nil {
-			row.Result, row.Failed = "failed", "here"
-			row.Text = m.Name + " is not in this clone"
-			return row
+			row.result, row.failed = "failed", "here"
+			return "", false
 		}
-		say("in place")
-	} else {
-		found, err := o.URL(m.Name)
-		if err != nil {
-			row.Result, row.Failed = "failed", "remote"
-			row.Text = err.Error()
-			return row
-		}
-		url = found
-		if err := o.clone(url, m.Ref, dir, &row, say); err != nil {
-			row.Result, row.Failed = "failed", "clone"
-			row.Text = err.Error()
-			return row
-		}
+		said.say("in place")
+		return "", true
 	}
-	ev, ok := o.build(ctx, dir, &row, say)
+	found, err := asked.url(member.name)
+	if err != nil {
+		row.result, row.failed = "failed", "remote"
+		return "", false
+	}
+	if err := asked.clone(found, member.ref, dir, said); err != nil {
+		row.result, row.failed = "failed", "clone"
+		return "", false
+	}
+	if err := asked.lay(member, dir, said); err != nil {
+		row.result, row.failed = "failed", "patch"
+		return "", false
+	}
+	return found, true
+}
+
+// member places one member and builds it. a failed test is run again to
+// tell flaky from failing, and a failure the fixer can mend is built again
+// from the branch it names.
+func (asked Options) member(
+	ctx context.Context,
+	member Member,
+	mu *sync.Mutex,
+) Row {
+	row := Row{member: member}
+	said := voice{out: asked.out, name: member.name, mu: mu}
+	dir := filepath.Join(asked.work, member.name)
+	url, ok := asked.placed(member, dir, &row, said)
+	if !ok {
+		return row
+	}
+	ev, ok := asked.build(ctx, dir, &row, said)
 	if ok {
-		row.Result = "ok"
+		row.result = "ok"
 		return row
 	}
 	if ev.Step == "test" {
-		say("test failed; running it again to tell flaky from failing")
-		row.Tries++
-		if _, again := o.run(ctx, dir, &row); again {
-			row.Result = "flaky"
+		said.say("test failed; running it again to tell flaky " +
+			"from failing")
+		row.tries++
+		if _, again := asked.run(ctx, dir, &row); again {
+			row.result = "flaky"
 			return row
 		}
 	}
-	row.Result, row.Failed, row.Text = "failed", ev.Step, ev.Text
-	branch, err := o.Fixer.Fix(
-		ctx,
-		Failure{Member: m, Dir: dir, Step: ev.Step, Text: ev.Text},
-	)
-	if err != nil || branch == "" {
-		return row
-	}
-	if url == "" {
-		// a fix is on a remote branch, but there is no remote when
-		// the members are already here.
-		return row
-	}
-	say("a fix is offered on %s; building it", branch)
-	fixed := filepath.Join(o.Work, m.Name+"-fix")
-	if err := o.clone(url, branch, fixed, &row, say); err != nil {
-		return row
-	}
-	if _, ok := o.build(ctx, fixed, &row, say); ok {
-		row.Result = "fixed on " + branch
-	}
+	row.result, row.failed = "failed", ev.Step
+	asked.mend(ctx, member, dir, url, ev, &row, said)
 	return row
+}
+
+// mend offers a deterministic failure to the fixer. a branch it names is
+// cloned beside the member and built, and the row says so if that passes.
+// with no remote there is nowhere a fix could come from.
+func (asked Options) mend(
+	ctx context.Context,
+	member Member,
+	dir, url string,
+	ev Event,
+	row *Row,
+	said voice,
+) {
+	branch, err := asked.fixer.Fix(ctx, member, dir, ev.Step, ev.Text)
+	if err != nil || branch == "" || url == "" {
+		return
+	}
+	said.say("a fix is offered on %s; building it", branch)
+	fixed := filepath.Join(asked.work, member.name+"-fix")
+	if err := asked.clone(url, branch, fixed, said); err != nil {
+		return
+	}
+	if err := asked.lay(member, fixed, said); err != nil {
+		return
+	}
+	if _, ok := asked.build(ctx, fixed, row, said); ok {
+		row.result = "fixed on " + branch
+	}
+}
+
+// lay lays the member's patches on its fresh clone at dir, when the
+// stack has a patch to lay them with. it says so only when it laid one.
+func (asked Options) lay(member Member, dir string, said voice) error {
+	if asked.patch == nil {
+		return nil
+	}
+	laid, err := asked.patch(member, dir)
+	if err != nil {
+		return err
+	}
+	if count.Positive(laid) {
+		said.say("%d %s laid", laid, plural(laid, "patch", "patches"))
+	}
+	return nil
+}
+
+// plural is one or many of a thing, by count.
+func plural(counted int, one, many string) string {
+	if counted == count.One {
+		return one
+	}
+	return many
 }
 
 // build runs the child, retrying a transient failure with backoff. it returns
 // the failing event and false when it does not pass.
-func (o Options) build(
+func (asked Options) build(
 	ctx context.Context,
 	dir string,
 	row *Row,
-	say func(string, ...any),
+	said voice,
 ) (Event, bool) {
 	var last Event
-	for attempt := 0; attempt < o.Tries; attempt++ {
-		row.Tries++
-		ev, ok := o.run(ctx, dir, row)
+	for attempt := count.First; attempt < asked.tries; attempt++ {
+		row.tries++
+		ev, ok := asked.run(ctx, dir, row)
 		if ok {
 			return ev, true
 		}
@@ -315,79 +536,201 @@ func (o Options) build(
 		if ev.Kind != "transient" {
 			return ev, false
 		}
-		wait := o.backoff(attempt)
-		say(
+		// no wait after the last try: nothing comes after it
+		if attempt == count.Last(asked.tries) {
+			break
+		}
+		wait := asked.backoff(attempt)
+		said.say(
 			"%s failed on the network; again in %s",
 			ev.Step,
 			wait.Round(time.Millisecond),
 		)
-		o.Sleep(wait)
+		asked.sleep(wait)
 	}
 	return last, false
 }
 
-// run is one child: events read as they come, lint count kept, first failure
-// returned.
-func (o Options) run(ctx context.Context, dir string, row *Row) (Event, bool) {
-	cmd := o.Child(dir)
+// eventLimit is defined by this package: the most bytes an event line may
+// hold, newline included. Any child that writes a longer line fails.
+const eventLimit = 1 << 20
+
+// maxText is defined by this package: the most bytes of a failure's text
+// that Happened keeps. JSON writes a byte that is not text as six, so a
+// line with this much text stays under eventLimit.
+const maxText = eventLimit / 8
+
+// cutNote ends a text that was cut.
+const cutNote = "\n[output cut]\n"
+
+// cut is text as an event carries it. Text over maxText is cut at the
+// end of a character. It says so.
+func cut(text string) string {
+	if len(text) <= maxText {
+		return text
+	}
+	end := maxText
+	floor := end - utf8.UTFMax
+	for end > floor && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end] + cutNote
+}
+
+// pipeDelay is defined by this package: how long Wait gives the other
+// pipes of a child to close once it has exited. Grandchildren that keep
+// one open do not hold the build past this.
+const pipeDelay = 2 * time.Second
+
+// run is one child. It reads events as they come and keeps the lint
+// count. It returns the first failure. Lines past eventLimit stop the
+// child and fail the run. So do failed reads and a cancelled ctx. No
+// child is left writing to a pipe that nobody reads.
+func (asked Options) run(ctx context.Context, dir string,
+	row *Row) (Event, bool) {
+	if asked.child == nil {
+		none := errors.New("the build was given no child")
+		return notStarted(none), false
+	}
+	if err := ctx.Err(); err != nil {
+		text := "cancelled before it started: " + err.Error()
+		return Event{Step: "start", State: "fail", Text: text}, false
+	}
+	cmd := asked.child(dir)
 	cmd.Dir = dir
+	cmd.WaitDelay = pipeDelay
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return Event{
-			Step:  "start",
-			State: "fail",
-			Text:  err.Error(),
-		}, false
+		return notStarted(err), false
 	}
 	var errb strings.Builder
 	cmd.Stderr = &errb
 	if err := cmd.Start(); err != nil {
-		return Event{
-			Step:  "start",
-			State: "fail",
-			Text:  err.Error(),
-		}, false
+		return notStarted(err), false
 	}
-	var fail *Event
-	sc := bufio.NewScanner(out)
-	for sc.Scan() {
-		var ev Event
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
-		}
-		if ev.Step == "lint" && ev.State == "ok" {
-			row.Lint = ev.Count
-		}
-		if ev.State == "fail" && fail == nil {
-			e := ev
-			fail = &e
-		}
+	finished := make(chan struct{})
+	defer close(finished)
+	go stopOnCancel(ctx, cmd, out, finished)
+	fail, unread := readEvents(out, row)
+	if unread != nil {
+		stop(cmd, out)
 	}
 	waitErr := cmd.Wait()
-	if fail != nil {
+	return outcome(ctx, fail, unread, waitErr, errb.String())
+}
+
+// outcome is how a run ended. It is given the first failure event read
+// and the error that stopped the reading. It is given how the child
+// exited and what it said on its standard error. The failure the child
+// reported comes first.
+func outcome(
+	ctx context.Context, fail *Event, unread, waitErr error, said string,
+) (Event, bool) {
+	switch {
+	case fail != nil:
 		return *fail, false
-	}
-	if waitErr != nil {
-		text := strings.TrimSpace(errb.String())
-		return Event{
-			Step:  "child",
-			State: "fail",
-			Kind:  Kind(text),
-			Text:  text,
-		}, false
+	case ctx.Err() != nil:
+		return Event{Step: "child", State: "fail",
+			Text: "cancelled: " + ctx.Err().Error()}, false
+	case unread != nil:
+		return Event{Step: "events", State: "fail",
+			Text: unreadText(unread)}, false
+	case waitErr != nil:
+		text := strings.TrimSpace(said)
+		return Event{Step: "child", State: "fail", Kind: Kind(text),
+			Text: text}, false
 	}
 	return Event{Step: "done", State: "ok"}, true
 }
 
-// clone checks ref out into dir, removing dir first on each try. it retries
-// with backoff, up to Tries.
-func (o Options) clone(
-	url, ref, dir string,
-	row *Row,
-	say func(string, ...any),
-) error {
+// unreadText is why the events stopped being read.
+func unreadText(unread error) string {
+	return fmt.Sprintf("an event line passed the limit of %d bytes or "+
+		"could not be read, so the child was stopped: %v", eventLimit,
+		unread)
+}
+
+// errTooLong is why a line that looks like an event was refused: it is
+// past eventLimit.
+var errTooLong = errors.New("an event line passed the limit")
+
+// readEvents reads the child's output to its end. It keeps the lint count
+// in row and returns the first failure event. The child also says things
+// that are not events. Those lines are skipped whatever their length.
+//
+// Lines that begin like an event and pass eventLimit are not skipped.
+// They are returned as an error, as is a read that failed.
+func readEvents(out io.Reader, row *Row) (*Event, error) {
+	var fail *Event
+	reader := bufio.NewReaderSize(out, eventLimit)
+	for {
+		line, err := reader.ReadSlice('\n')
+		long := errors.Is(err, bufio.ErrBufferFull)
+		if long && bytes.HasPrefix(line, []byte("{")) {
+			return fail, errTooLong
+		}
+		for errors.Is(err, bufio.ErrBufferFull) {
+			_, err = reader.ReadSlice('\n')
+		}
+		var seen Event
+		if !long && json.Unmarshal(line, &seen) == nil {
+			fail = noted(fail, seen, row)
+		}
+		if err != nil {
+			return fail, nonEnd(err)
+		}
+	}
+}
+
+// noted is the first failure after one more event: the failure so far, or
+// this event if it is the first. It keeps the lint count in row.
+func noted(fail *Event, seen Event, row *Row) *Event {
+	if seen.Step == "lint" && seen.State == "ok" {
+		row.lint = seen.Count
+	}
+	if seen.State == "fail" && fail == nil {
+		return &seen
+	}
+	return fail
+}
+
+// nonEnd is err unless it is the end of the output.
+func nonEnd(err error) error {
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+// stop ends a child and lets go of its output. Readers waiting on the
+// output then return. Others may still hold the other end of it.
+func stop(cmd *exec.Cmd, out io.Closer) {
+	_ = cmd.Process.Kill()
+	_ = out.Close()
+}
+
+// stopOnCancel stops the child if ctx is cancelled before finished is
+// closed.
+func stopOnCancel(
+	ctx context.Context, cmd *exec.Cmd, out io.Closer,
+	finished <-chan struct{},
+) {
+	select {
+	case <-ctx.Done():
+		stop(cmd, out)
+	case <-finished:
+	}
+}
+
+// notStarted is the event for a child that could not start.
+func notStarted(err error) Event {
+	return Event{Step: "start", State: "fail", Text: err.Error()}
+}
+
+// clone checks ref out into dir, removing dir first. it retries with backoff.
+func (asked Options) clone(url, ref, dir string, said voice) error {
 	var err error
-	for attempt := 0; attempt < o.Tries; attempt++ {
+	for attempt := count.First; attempt < asked.tries; attempt++ {
 		os.RemoveAll(dir)
 		cmd := exec.Command(
 			"git",
@@ -400,43 +743,48 @@ func (o Options) clone(
 			url,
 			dir,
 		)
-		var b strings.Builder
-		cmd.Stderr = &b
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
 		if err = cmd.Run(); err == nil {
 			return nil
 		}
-		err = fmt.Errorf(
-			"clone %s at %s: %s",
-			url,
-			ref,
-			strings.TrimSpace(b.String()),
-		)
-		if attempt < o.Tries-1 {
-			wait := o.backoff(attempt)
-			say(
-				"clone failed; again in %s",
-				wait.Round(time.Millisecond),
-			)
-			o.Sleep(wait)
+		why := strings.TrimSpace(stderr.String())
+		err = fmt.Errorf("clone %s at %s: %s", url, ref, why)
+		// no wait after the last try: nothing comes after it
+		if attempt == count.Last(asked.tries) {
+			break
 		}
+		wait := asked.backoff(attempt)
+		said.say("clone failed; again in %s",
+			wait.Round(time.Millisecond))
+		asked.sleep(wait)
 	}
 	return err
 }
 
-// backoff is full jitter: a random wait up to a cap that starts at one
-// second, doubles each attempt and stops at thirty.
-func (o Options) backoff(attempt int) time.Duration {
-	ceiling := time.Second << attempt
-	if ceiling > 30*time.Second {
-		ceiling = 30 * time.Second
+// the backoff's ceiling starts at one second and doubles each attempt,
+// up to thirty seconds, defined here for a clone or build on a network
+// that may come back.
+const (
+	firstWait   = time.Second      // defined here: the first ceiling
+	longestWait = 30 * time.Second // defined here: the last ceiling
+)
+
+// backoff is full jitter. it returns a random wait up to a cap that
+// starts at one second, doubles each attempt and stops at thirty.
+func (asked Options) backoff(attempt int) time.Duration {
+	ceiling := firstWait << attempt
+	if ceiling > longestWait {
+		ceiling = longestWait
 	}
-	return time.Duration(rand.Int63n(int64(ceiling)))
+	wait := asked.jitter(int64(ceiling))
+	return time.Duration(wait)
 }
 
 // Table writes the rows as a table a person reads at the end.
-func Table(w io.Writer, rows []Row) {
+func Table(out io.Writer, rows []Row) {
 	fmt.Fprintf(
-		w,
+		out,
 		"%-18s %-10s %-22s %5s %5s\n",
 		"repository",
 		"ref",
@@ -444,19 +792,19 @@ func Table(w io.Writer, rows []Row) {
 		"lint",
 		"tries",
 	)
-	for _, r := range rows {
-		result := r.Result
-		if r.Failed != "" && !strings.HasPrefix(result, "fixed") {
-			result += " at " + r.Failed
+	for _, row := range rows {
+		result := row.result
+		if row.failed != "" && !strings.HasPrefix(result, "fixed") {
+			result += " at " + row.failed
 		}
 		fmt.Fprintf(
-			w,
+			out,
 			"%-18s %-10s %-22s %5d %5d\n",
-			r.Name,
-			r.Ref,
+			row.member.name,
+			row.member.ref,
 			result,
-			r.Lint,
-			r.Tries,
+			row.lint,
+			row.tries,
 		)
 	}
 }

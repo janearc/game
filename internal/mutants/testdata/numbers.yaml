@@ -1,0 +1,166 @@
+# numbers.yaml: the numbers mutants' tests are held to, by name
+# (ruling 4, 2026-10-18: a test's numbers live in a config, and
+# the test is held to it).
+
+numbers:
+  - name: test-workers
+    value: 2
+    says: the workers the tests' runs get, few enough that the machine is unbothered and enough that they overlap
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the quick options were written
+
+  - name: test-timeout-seconds
+    value: 30
+    says: how long a mutant's tests may run in the tests, long enough for the tiny fixture on a loaded machine
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the quick options were written
+
+  - name: tiny-first-line
+    value: 7
+    says: the first line of testdata/tiny/tiny.go a mutant sits on, where Abs begins
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: tiny-last-line
+    value: 20
+    says: the last line of testdata/tiny/tiny.go a mutant sits on, where Hello ends
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: tiny-killed
+    value: 4
+    says: the tiny fixture's mutants TestAbs kills, four of Abs's six
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: tiny-equivalent
+    value: 2
+    says: the tiny fixture's mutants the .mutants file says make no difference, two of Abs's six
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: tiny-survived
+    value: 2
+    says: the tiny fixture's mutants nothing holds, Twice's two
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: tiny-unbuildable
+    value: 1
+    says: the tiny fixture's mutant that does not compile, Hello's one
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
+
+  - name: follow-interval
+    value: 50
+    says: how often a follow speaks by count, every fifty mutants, as run.go's everyFifty holds it
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the interval was written
+
+  - name: follow-feed-count
+    value: 120
+    says: the outcomes the fifty-count follow is fed, past two intervals and not three
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: of-each-ten
+    value: 10
+    says: the followed outcomes' pattern repeats each ten, eight killed, one survived, one timed out
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: clock-step-seconds
+    value: 10
+    says: the step the still clock takes at each interval's end, so the pace reads in round seconds
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: quiet-for-millis
+    value: 50
+    says: how quiet the quiet-run test lets the run be before it speaks, short so the test is fast
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: quiet-spells
+    value: 5
+    says: the quiet spells waited around the quiet run's one outcome, well past the quiet
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: quiet-run-outcomes
+    value: 3
+    says: the outcomes the quiet run has, few enough the test is fast and enough that the count shows
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: first-suite-mutants
+    value: 3
+    says: the first suite's mutants in the estimate test
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: second-suite-mutants
+    value: 4
+    says: the second suite's mutants in the estimate test
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: some-workers
+    value: 3
+    says: the workers the copy-trees test asks for, past one, so the trees are many
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: suite-times
+    value: 5
+    says: how long a package's unchanged suite has, as many times a mutant's own timeout, as the docs promise
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the docs promised it
+
+  - name: build-times
+    value: 2
+    says: how long the build has, as many times the timeout, as the docs promise
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the docs promised it
+
+  - name: wait-delay-seconds
+    value: 5
+    says: how long go test has to let go of its output, as the docs promise
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the docs promised it
+
+  - name: drawn-most-mutants
+    value: 12
+    says: the most mutants a drawn report holds in the again property
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: drawn-highest-line
+    value: 9999
+    says: the highest line a drawn mutant sits on, well past a real file
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: quiet-default-seconds
+    value: 30
+    says: how long a run may go without a word by default, thirty seconds, as the docs promise
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the docs promised it
+
+  - name: unprintable-node
+    value: 42
+    says: a number handed to render as a node, which is no node, so printing it fails
+    kind: picked
+    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
+
+  - name: wait-delay-hold-seconds
+    value: 8
+    says: how long the stand-in's child holds the output open, past the delay and past a delay of six, so a longer delay is seen
+    kind: picked
+    by: picker, 2026-10-26, for the held waitDelay test
+
+  - name: wait-delay-slack-millis
+    value: 500
+    says: how far from the delay the wait may land, wide enough for a loaded machine and narrower than the one second between five and six
+    kind: picked
+    by: picker, 2026-10-26, for the held waitDelay test

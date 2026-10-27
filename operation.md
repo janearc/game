@@ -47,3 +47,29 @@ not which one. change the list, then run bootstrap again.
 
 a game built without the list does everything but release: `game sweep`
 will not call a tree clean, and `game release` refuses and says why.
+
+## what a build is stamped with
+
+`game build` stamps each binary with four things. They are the short
+commit it was built from, marked `-dirty` when the tree had changes, and
+the time of that commit, not the clock. They are who built it, and the
+sessions named in the commits.
+
+`game version` reads back the commit and its time. a tool built this way
+can read the builder and the sessions with `--who`. go's `-trimpath` keeps
+the builder's paths out of the binary.
+
+the never-words are not in that list. go embeds
+`internal/sweep/never/hashes` as the file stands when it compiles. git
+ignores that file, so the commit does not say which list a binary carries.
+
+only `sh bootstrap.sh` writes the file, by running `cmd/never`. `game
+build` compiles what is there and does not write it. nothing compares the
+embedded hashes to the list on disk.
+
+so two binaries from one commit can differ in what they refuse. after the
+list changes, run bootstrap again and build again. a game whose hashes are
+out of date does not say so.
+
+`never --age` says which commit `cmd/never` was built from. it does not say
+how old the list is.

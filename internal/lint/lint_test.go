@@ -1,120 +1,163 @@
-package lint
+package lint_test
 
 import (
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/lint"
 )
 
-// a module with one of everything: an uncommented function, a bare
-// print in a library, a buzzword, an exclamation mark in a doc, and a
-// shout in a comment that is only reported.
-func TestRun(t *testing.T) {
+// lintWidth is the width rule the tests hold the lint to, as text.
+func lintWidth(t *testing.T) string {
+	t.Helper()
+	width := int(held(t, "lint-width"))
+	return strconv.Itoa(width)
+}
+
+// lintRows is the rows rule the tests hold the lint to, as text.
+func lintRows(t *testing.T) string {
+	t.Helper()
+	rows := int(held(t, "lint-rows"))
+	return strconv.Itoa(rows)
+}
+
+// described is the lint of the rules given, or the test stops.
+func described(t *testing.T, rules ...config.Rule) lint.Lint {
+	t.Helper()
+	linter, err := lint.Describe(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return linter
+}
+
+// rulesOf is the rules of each finding, in order.
+func rulesOf(found []lint.Finding) string {
+	var out []string
+	for _, finding := range found {
+		out = append(out, finding.Rule())
+	}
+	return strings.Join(out, ",")
+}
+
+// everything is a module with one of everything: an uncommented
+// function, a bare print in a library, a buzzword, an exclamation mark
+// in a doc, a shout in a comment, a wide comment, a wide code line, a
+// tall readme and art at the top of one.
+func everything(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "lib"), 0o755)
-	os.MkdirAll(filepath.Join(dir, "tall"), 0o755)
-	os.WriteFile(
-		filepath.Join(dir, "main.go"),
-		[]byte(
-			"package main\n\n// main is fine.\nfunc "+
-				"main() { helper() }\n\nfunc helper() {}\n",
-		),
-		0o644,
-	)
-	os.WriteFile(
-		filepath.Join(dir, "lib", "lib.go"),
-		[]byte(
-			"package lib\n\nimport \"fmt\"\n\n// Say is a blazing"+"-fast HELLOWORLD, JSON allowed.\nfunc Say() { fmt.Println(\"x\") }\n",
-		),
-		0o644,
-	)
-	wide := strings.Repeat("x", 81)
-	os.WriteFile(
-		filepath.Join(dir, "README.md"),
-		[]byte(
-			"# x\n\nwow!\n\n```\nfine!\n```\n"+wide+"\n| "+wide+" |\n",
-		),
-		0o644,
-	)
-	os.WriteFile(
-		filepath.Join(dir, "wide.go"),
-		[]byte(
-			"package main\n\n// "+wide+"\nfunc wide() { _ = \""+wide+"\" }\n",
-		),
-		0o644,
-	)
-	os.WriteFile(
-		filepath.Join(dir, "tall", "README.md"),
-		[]byte(strings.Repeat("x\n", 26)),
-		0o644,
-	)
-	l, err := Describe([]struct {
-		Name string
-		Args []string
-	}{{"width", []string{"80"}}, {"rows", []string{"25"}}, {"comments", nil}, {"print", nil}, {"exclaim", nil}, {"shout", nil}, {"words", []string{"blazing" + "-fast"}}})
-	if err != nil {
-		t.Fatal(err)
+	width := int(held(t, "lint-width"))
+	rows := int(held(t, "lint-rows"))
+	wide := strings.Repeat("x", count.Next(width))
+	tall := strings.Repeat("x\n", count.Next(rows))
+	openDir := os.FileMode(0o755)
+	openFile := os.FileMode(0o644)
+	files := map[string]string{
+		"main.go": "package main\n\n// main is fine.\nfunc " +
+			"main() { helper() }\n\nfunc helper() {}\n",
+		"lib/lib.go": "package lib\n\nimport \"fmt\"\n\n" +
+			"// Say is a blazing" + "-fast HELLOWORLD, JSON allowed.\n" +
+			"func Say() { fmt.Println(\"x\") }\n",
+		"README.md": "# x\n\nwow!\n\n```\nfine!\n```\n" + wide +
+			"\n| " + wide + " |\n",
+		"wide.go": "package main\n\n// " + wide +
+			"\nfunc wide() { _ = \"" + wide + "\" }\n",
+		"tall/README.md": tall,
 	}
-	fs, err := l.Run(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]int{}
-	for _, f := range fs {
-		got[f.Rule]++
-	}
-	// width: the doc's wide line fails, its table row does not; the
-	// wide comment fails, the wide code line is only a look.
-	want := map[string]int{
-		"uncommented": 1,
-		"bare print":  1,
-		"word":        1,
-		"exclamation": 1,
-		"shouting":    1,
-		"width":       3,
-		"height":      1,
-	}
-	for rule, n := range want {
-		if got[rule] != n {
-			t.Errorf(
-				"%s: got %d want %d; all: %v",
-				rule,
-				got[rule],
-				n,
-				fs,
-			)
+	for name, body := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), openDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), openFile); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if !Failed(fs) {
+	return dir
+}
+
+// a module with one of everything lints to one finding of each kind.
+func TestRun(t *testing.T) {
+	dir := everything(t)
+	width := lintWidth(t)
+	rows := lintRows(t)
+	linter, err := lint.Describe([]config.Rule{
+		config.Ruled("width", width),
+		config.Ruled("rows", rows),
+		config.Ruled("comments"),
+		config.Ruled("print"),
+		config.Ruled("exclaim"),
+		config.Ruled("shout"),
+		config.Ruled("words", "blazing"+"-fast"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkRun(t, found)
+	only := []lint.Finding{looked(t)}
+	if fix, _, _ := lint.Verdict(only); fix != count.Nothing {
+		t.Error("a look was a finding to fix")
+	}
+}
+
+// checkRun is the everything module's tally: one finding of each kind,
+// and the wide code line only a look.
+func checkRun(t *testing.T, found []lint.Finding) {
+	t.Helper()
+	got := map[string]int{}
+	for _, finding := range found {
+		got[finding.Rule()]++
+	}
+	want := map[string]int{
+		"uncommented": count.One,
+		"bare print":  count.One,
+		"word":        count.One,
+		"exclamation": count.One,
+		"shouting":    count.One,
+		"width":       int(held(t, "width-findings")),
+		"height":      count.One,
+	}
+	for rule, wanted := range want {
+		if got[rule] != wanted {
+			t.Errorf("%s: got %d want %d; all: %v", rule, got[rule],
+				wanted, found)
+		}
+	}
+	if _, _, err := lint.Verdict(found); err == nil {
 		t.Error("nothing failed")
 	}
-	looks := 0
-	for _, f := range fs {
-		if f.Rule == "width" && f.Look {
+	looks := count.Nothing
+	for _, finding := range found {
+		if finding.Rule() == "width" && finding.Look() {
 			looks++
 		}
 	}
-	if looks != 1 {
+	if looks != count.One {
 		t.Errorf("wide code should be one look, got %d", looks)
-	}
-	only := []Finding{{Rule: "shouting", Look: true}}
-	if Failed(only) {
-		t.Error("a look failed the lint")
 	}
 }
 
 // nothing described is no lint at all, and a bad rule is an error.
 func TestDescribe(t *testing.T) {
-	l, err := Describe(nil)
-	if err != nil || !l.Empty() {
-		t.Fatalf("empty: %+v %v", l, err)
+	linter, err := lint.Describe(nil)
+	if err != nil || !linter.Empty() {
+		t.Fatalf("empty: %+v %v", linter, err)
 	}
-	if _, err := Describe([]struct {
-		Name string
-		Args []string
-	}{{"width", []string{"wide"}}}); err == nil {
+	if _, err := lint.Describe([]config.Rule{
+		config.Ruled("width", "wide"),
+	}); err == nil {
 		t.Error("a bad width described")
 	}
 }
@@ -123,39 +166,38 @@ func TestDescribe(t *testing.T) {
 // found a tree called clean while four new lines were over the width.
 func TestTrackedSeesNewFiles(t *testing.T) {
 	dir := t.TempDir()
-	git := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-	}
-	git("init", "-q")
-	write := func(rel, body string) {
-		path := filepath.Join(dir, rel)
-		os.MkdirAll(filepath.Dir(path), 0o755)
-		os.WriteFile(path, []byte(body), 0o644)
-	}
-	write(".gitignore", "build/\n")
-	write("old.go", "package x\n")
-	write("new.go", "package x\n")
-	write("build/vendor.go", "package y\n")
-	git("add", "old.go", ".gitignore")
-	files, err := tracked(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	gitIn(t, dir, "init", "-q")
+	writeIn(t, dir, ".gitignore", "build/\n")
+	writeIn(t, dir, "old.md", "synergy\n")
+	writeIn(t, dir, "new.md", "synergy\n")
+	writeIn(t, dir, "build/vendor.md", "synergy\n")
+	gitIn(t, dir, "add", "old.md", ".gitignore")
+	files := filesFound(t, dir)
 	got := map[string]bool{}
-	for _, f := range files {
-		got[f] = true
+	for _, file := range files {
+		got[file] = true
 	}
-	for _, want := range []string{"old.go", "new.go", ".gitignore"} {
+	for _, want := range []string{"old.md", "new.md"} {
 		if !got[want] {
 			t.Errorf("%s not linted; got %v", want, files)
 		}
 	}
-	if got["build/vendor.go"] {
+	if got["build/vendor.md"] {
 		t.Errorf("an ignored file was linted; got %v", files)
+	}
+}
+
+// writeIn writes body to name under dir, making the directories.
+func writeIn(t *testing.T, dir, name, body string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	openDir := os.FileMode(0o755)
+	if err := os.MkdirAll(filepath.Dir(path), openDir); err != nil {
+		t.Fatal(err)
+	}
+	openFile := os.FileMode(0o644)
+	if err := os.WriteFile(path, []byte(body), openFile); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -167,7 +209,11 @@ func TestParagraph(t *testing.T) {
 	five := "one\ntwo\nthree\nfour\nfive\n"
 	doc := "# title\n\n" + five + "\n- a\n- b\n- c\n- d\n- e\n\n" +
 		"```\n" + five + "```\n\n| a |\n| b |\n| c |\n| d |\n| e |\n"
-	os.WriteFile(filepath.Join(dir, "doc.md"), []byte(doc), 0o644)
+	openFile := os.FileMode(0o644)
+	page := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(page, []byte(doc), openFile); err != nil {
+		t.Fatal(err)
+	}
 	src := "package x\n\n// f runs.\n// " + strings.ReplaceAll(
 		strings.TrimSpace(five),
 		"\n",
@@ -175,40 +221,33 @@ func TestParagraph(t *testing.T) {
 	) +
 		"\n//\n//\tone\n//\ttwo\n//\tthree\n//\tfour\n//\tfive\nfunc " +
 		"f() {}\n"
-	os.WriteFile(filepath.Join(dir, "x.go"), []byte(src), 0o644)
-	l, err := Describe([]struct {
-		Name string
-		Args []string
-	}{{"paragraph", []string{"4"}}})
+	source := filepath.Join(dir, "x.go")
+	if err := os.WriteFile(source, []byte(src), openFile); err != nil {
+		t.Fatal(err)
+	}
+	linter, err := lint.Describe([]config.Rule{config.Ruled("paragraph", "4")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs, err := l.Run(dir)
+	found, err := linter.Run(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]int{}
-	for _, f := range fs {
-		if f.Rule == "paragraph" {
-			got[f.File]++
+	for _, finding := range found {
+		if finding.Rule() == "paragraph" {
+			got[finding.File()]++
 		}
 	}
-	if got["doc.md"] != 1 {
-		t.Errorf(
-			"doc.md: want only the five-line paragraph, got %d: %v",
-			got["doc.md"],
-			fs,
-		)
+	if got["doc.md"] != count.One {
+		t.Errorf("doc.md: want only the five-line paragraph, got %d: %v",
+			got["doc.md"], found)
 	}
-	if got["x.go"] != 1 {
-		t.Errorf(
-			"x.go: want the six-line comment paragraph, "+
-				"not the code, got %d: %v",
-			got["x.go"],
-			fs,
-		)
+	if got["x.go"] != count.One {
+		t.Errorf("x.go: want the six-line comment paragraph, "+
+			"not the code, got %d: %v", got["x.go"], found)
 	}
-	if !Failed(fs) {
+	if _, _, err := lint.Verdict(found); err == nil {
 		t.Error("a long paragraph did not fail")
 	}
 }
@@ -218,22 +257,27 @@ func TestParagraph(t *testing.T) {
 // a usage line in a doc comment is code, so its argument names are not
 // shouting, while the prose around it still is.
 func TestBlocky(t *testing.T) {
-	for _, line := range []string{
+	t.Parallel()
+	indented := []string{
 		"//\tgame bounce [RANGE]",
 		"//    set     CONTACT ada@example.com",
-		" *\tgame run NAME",
-	} {
-		if !blocky(line) {
-			t.Errorf("not read as code: %q", line)
+		"/*\n *\tgame run NAME\n */",
+	}
+	for place, got := range shoutedIn(t, indented...) {
+		if got != "" {
+			t.Errorf("not read as code: %q shouted %q", indented[place], got)
 		}
 	}
-	for _, line := range []string{
+	prose := []string{
 		"// the RANGE is a commit or a range of them",
 		"//",
 		"// set CONTACT to who answers",
-	} {
-		if blocky(line) {
-			t.Errorf("read as code: %q", line)
+	}
+	want := []string{"RANGE", "", "CONTACT"}
+	for place, got := range shoutedIn(t, prose...) {
+		if got != want[place] {
+			t.Errorf("read as code: %q shouted %q, want %q", prose[place],
+				got, want[place])
 		}
 	}
 }
@@ -242,70 +286,73 @@ func TestBlocky(t *testing.T) {
 // name and a backticked name are not, and a struct field's tag is never
 // too wide, since the tag is one literal and cannot be split.
 func TestShoutedAndTagged(t *testing.T) {
-	if got := shouted("see DESIGN.md and `README`, on SIGTERM, NEVER"); len(
-		got,
-	) != 1 ||
-		got[0] != "NEVER" {
+	t.Parallel()
+	got := shoutedIn(t, "// see DESIGN.md and `README`, on SIGTERM, NEVER")
+	if got[count.First] != "NEVER" {
 		t.Errorf("shouted: %v", got)
 	}
-	long := strings.Repeat("x", 90)
-	if !tagged.MatchString("\tName string `json:\"" + long + "\"`") {
-		t.Error("a tagged field was not recognised")
+	width := int(held(t, "lint-width"))
+	long := strings.Repeat("x", count.Next(width))
+	tag := "`json:\"" + long + "\"`"
+	src := "package x\n\ntype T struct {\n" +
+		"\tName string " + tag + "\n" +
+		"\tA, B int " + tag + " // both\n" +
+		"\tMeta struct{ Name, Namespace string } " + tag + "\n" +
+		"\tItems []struct{ A int } " + tag + "\n" +
+		"}\n\n" +
+		"var F = func() { _ = `" + long + "` }\n\n" +
+		"var X = `" + long + "`\n"
+	span := lintWidth(t)
+	linter := described(t, config.Ruled("width", span))
+	var wide []int
+	for _, one := range goFound(t, linter, src) {
+		wide = append(wide, lineOf(one))
 	}
-	if !tagged.MatchString("\tA, B int `json:\"" + long + "\"` // both") {
-		t.Error("a tagged pair with a comment was not recognised")
-	}
-	inline := "\t\tMeta struct{ Name, Namespace string } `json:\"" +
-		long + "\"`"
-	if !tagged.MatchString(inline) {
-		t.Error(
-			"a tagged field of an inline struct type " +
-				"was not recognised",
-		)
-	}
-	if !tagged.MatchString(
-		"\tItems []struct{ A int } `json:\"" + long + "\"`",
-	) {
-		t.Error("a tagged slice of an inline struct was not recognised")
-	}
-	if tagged.MatchString("\tf := func() { `" + long + "` }") {
-		t.Error(
-			"a raw string in a function literal was " +
-				"taken for a tag",
-		)
-	}
-	if tagged.MatchString("\tx := `" + long + "`") {
-		t.Error("a raw string assignment was taken for a tag")
+	funcLiteral, rawString := onLine(src, "var F = func"), onLine(src, "var X = `")
+	if want := []int{funcLiteral, rawString}; !slices.Equal(wide, want) {
+		t.Errorf("wide lines %v: a tagged field is never too wide, a raw "+
+			"string in code is; want %v", wide, want)
 	}
 }
 
 // a test file is not linted unless the config asks for it, and a name
 // with capitals in it is a name wherever the capitals sit.
 func TestTestsAndNames(t *testing.T) {
-	for _, path := range []string{
-		"store_test.go", "clients/go/flipr_test.go",
-		"testdata/x.json", "a/testdata/x.json", "test_ingest.py",
-		"client.test.ts",
-	} {
-		if !testy(path) {
-			t.Errorf("%q is a test and was not taken for one", path)
+	t.Parallel()
+	linter := described(t, config.Ruled("words", "synergy"), config.Ruled("harden"))
+	files := map[string]string{
+		"store.go":                 "package s // synergy\n",
+		"tester.go":                "package s // synergy\n",
+		"protest.md":               "synergy\n",
+		"store_test.go":            "package s // synergy\n",
+		"clients/go/flipr_test.go": "package s // synergy\n",
+		"test_ingest.c":            "void f(void) { setuid(0); }\n",
+		"ingest.c":                 "void f(void) { setuid(0); }\n",
+	}
+	got := map[string]bool{}
+	for _, one := range ranOn(t, linter, files) {
+		got[one.File()] = true
+	}
+	for file := range files {
+		skipped := strings.HasSuffix(file, "_test.go") ||
+			strings.HasPrefix(filepath.Base(file), "test_")
+		if got[file] == skipped {
+			t.Errorf("%s: skipped %v, but found in it %v", file, skipped,
+				got[file])
 		}
 	}
-	for _, path := range []string{"store.go", "tester.go", "protest.md"} {
-		if testy(path) {
-			t.Errorf("%q is not a test and was taken for one", path)
-		}
-	}
-	for _, line := range []string{
+	names := shoutedIn(t,
 		"// see RUNBOOK-restore.md for the page",
 		"// DESIGN.md says why",
 		"// doc/OPERATION.md, at 03:20",
-	} {
-		if got := shouted(line); len(got) != 0 {
-			t.Errorf("a file name shouted in %q: %v", line, got)
+		"// THE CLIENT ANNOUNCES ITSELF",
+	)
+	for place, got := range names[:count.Last(len(names))] {
+		if got != "" {
+			t.Errorf("a file name shouted in line %d: %v", place, got)
 		}
 	}
-	if got := shouted("// THE CLIENT ANNOUNCES ITSELF"); len(got) != 3 {
+	if got := names[count.Last(len(names))]; got != "CLIENT,ANNOUNCES,ITSELF" {
 		t.Errorf("real shouting was missed: %v", got)
 	}
 }
@@ -313,17 +360,22 @@ func TestTestsAndNames(t *testing.T) {
 // a readme opens with a picture, and the picture is not prose: the height
 // is what is left after the title and one block of art at the top.
 func TestHeaderIsArt(t *testing.T) {
+	t.Parallel()
 	art := []string{"# flipr", "", "    ~~~ dolphin ~~~", "    ~~ ~~", "",
 		"## name", "flipr -- the flag store"}
-	if got := header(art); got != 5 {
-		t.Errorf("header is %d lines, want 5", got)
+	// the title, a blank, the art and the blank after it: the prose
+	// starts at the section
+	want := slices.Index(art, "## name")
+	if got := headerOf(t, art); got != want {
+		t.Errorf("header is %d lines, want %d", got, want)
 	}
 	fenced := []string{"", "# x", "", "```", "art", "```", "text"}
-	if got := header(fenced); got != 6 {
-		t.Errorf("fenced header is %d lines, want 6", got)
+	closing := slices.Index(fenced, "text")
+	if got := headerOf(t, fenced); got != closing {
+		t.Errorf("fenced header is %d lines, want %d", got, closing)
 	}
 	prose := []string{"# x", "", "words about x", "", "    code later"}
-	if got := header(prose); got != 0 {
+	if got := headerOf(t, prose); got != count.Nothing {
 		t.Errorf("a document with no art has a header of %d", got)
 	}
 }
@@ -331,47 +383,59 @@ func TestHeaderIsArt(t *testing.T) {
 // an import path is one token: it cannot be split, so its width is not a
 // finding, while a long string in code still is.
 func TestImportedIsNotWide(t *testing.T) {
-	long := strings.Repeat("x", 90)
-	for _, line := range []string{
-		"\tobservabilityproto \"github.com/" + long + "\"",
-		"\t\"github.com/" + long + "\"",
-		"\t_ \"github.com/" + long + "\"",
-	} {
-		if !imported(line) {
-			t.Errorf("not read as an import: %q", line[:40])
-		}
+	t.Parallel()
+	width := int(held(t, "lint-width"))
+	long := strings.Repeat("x", count.Next(width))
+	src := "package x\n\nimport (\n" +
+		"\tobservabilityproto \"github.com/" + long + "\"\n" +
+		"\t\"github.com/" + long + "\"\n" +
+		"\t_ \"github.com/" + long + "\"\n" +
+		")\n\nfunc f() string {\n" +
+		"\ts := \"" + long + "\"\n" +
+		"\t_ = s\n" +
+		"\treturn \"" + long + "\"\n}\n"
+	span := lintWidth(t)
+	linter := described(t, config.Ruled("width", span))
+	var wide []int
+	for _, one := range goFound(t, linter, src) {
+		wide = append(wide, lineOf(one))
 	}
-	for _, line := range []string{
-		"\ts := \"" + long + "\"",
-		"\treturn \"" + long + "\"",
-	} {
-		if imported(line) {
-			t.Errorf("read as an import: %q", line[:40])
-		}
+	assigned, returned := onLine(src, "s := \""), onLine(src, "return \"")
+	if want := []int{assigned, returned}; !slices.Equal(wide, want) {
+		t.Errorf("wide lines %v: an import path is one token, a long "+
+			"string in code is not; want %v", wide, want)
 	}
 }
 
 // a line the repository says to leave alone is left alone, and the marker
 // may sit on the line or on the line above it.
 func TestAllowedHere(t *testing.T) {
-	lines := []string{
-		"\tx := 1 // game: allow width",
-		"\t// game: allow width",
-		"\ty := 2",
-		"\tz := 3",
-		"\t// game: allow paragraph",
-		"\tw := 4",
+	t.Parallel()
+	src := "package x\n\nfunc f() {\n" +
+		"\tx := 1 // game: allow width\n" +
+		"\t// game: allow width\n" +
+		"\ty := 2\n" +
+		"\tz := 3\n" +
+		"\t// game: allow paragraph\n" +
+		"\tw := 4\n" +
+		"\t_, _, _, _ = x, y, z, w\n}\n"
+	linter := described(t, config.Ruled("width", "5"))
+	wide := map[int]bool{}
+	for _, one := range goFound(t, linter, src) {
+		wide[lineOf(one)] = true
 	}
-	if !allowedHere(lines, 0, "width") {
+	onIt, under := onLine(src, "x := 1"), onLine(src, "y := 2")
+	plain, other := onLine(src, "z := 3"), onLine(src, "w := 4")
+	if wide[onIt] {
 		t.Error("a marker on the line was not honoured")
 	}
-	if !allowedHere(lines, 2, "width") {
+	if wide[under] {
 		t.Error("a marker above the line was not honoured")
 	}
-	if allowedHere(lines, 3, "width") {
+	if !wide[plain] {
 		t.Error("a line with no marker was allowed")
 	}
-	if allowedHere(lines, 5, "width") {
+	if !wide[other] {
 		t.Error("a marker for another rule allowed this one")
 	}
 }
@@ -379,21 +443,16 @@ func TestAllowedHere(t *testing.T) {
 // a readme's header art is exempt from the width as well as the height: a
 // picture is not wrapped.
 func TestHeaderArtIsNotMeasured(t *testing.T) {
-	wide := "    " + strings.Repeat("~", 90)
+	t.Parallel()
+	width := int(held(t, "lint-width"))
+	wide := "    " + strings.Repeat("~", count.Next(width))
 	src := "# x\n\n" + wide + "\n\n## name\n\nshort prose\n"
-	dir := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(dir, "README.md"), []byte(src), 0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-	l := Lint{Width: 80, Rows: 25}
-	found, err := l.doc(filepath.Join(dir, "README.md"), "README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range found {
-		t.Errorf("the header was measured: %v", f)
+	rows := lintRows(t)
+	rule := lintWidth(t)
+	linter := described(t, config.Ruled("width", rule),
+		config.Ruled("rows", rows))
+	for _, finding := range docFound(t, linter, "README.md", src) {
+		t.Errorf("the header was measured: %v", finding)
 	}
 }
 
@@ -406,40 +465,36 @@ func TestAllow(t *testing.T) {
 		"and a third.\n" +
 		"and a fourth.\n" +
 		"and a fifth, which is over.\n"
+	openFile := os.FileMode(0o644)
 	for _, name := range []string{"OPERATION.md", "README.md"} {
-		if err := os.WriteFile(
-			filepath.Join(dir, name),
-			[]byte("# a page\n\n"+long),
-			0o644,
-		); err != nil {
+		page := filepath.Join(dir, name)
+		if err := os.WriteFile(page, []byte("# a page\n\n"+long),
+			openFile); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rules := []struct {
-		Name string
-		Args []string
-	}{
-		{Name: "paragraph", Args: []string{"4"}},
-		{Name: "allow", Args: []string{"OPERATION.md", "paragraph"}},
-	}
-	l, err := Describe(rules)
+	linter, err := lint.Describe([]config.Rule{
+		config.Ruled("paragraph", "4"),
+		config.Ruled("allow", "OPERATION.md", "paragraph"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	found, err := l.Run(dir)
+	found, err := linter.Run(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range found {
-		if f.File == "OPERATION.md" {
-			t.Errorf("the exempt page was still held: %s", f)
+	for _, finding := range found {
+		if finding.File() == "OPERATION.md" {
+			t.Errorf("the exempt page was still held: %s", finding)
 		}
 	}
-	held := false
-	for _, f := range found {
-		held = held || (f.File == "README.md" && f.Rule == "paragraph")
+	heldStill := false
+	for _, finding := range found {
+		heldStill = heldStill || (finding.File() == "README.md" &&
+			finding.Rule() == "paragraph")
 	}
-	if !held {
+	if !heldStill {
 		t.Error("the page that was not exempt went unreported")
 	}
 }
@@ -448,29 +503,28 @@ func TestAllow(t *testing.T) {
 // against the finding the page gets, height.
 func TestAllowRows(t *testing.T) {
 	dir := t.TempDir()
-	tall := "# a page\n\n" + strings.Repeat("a line of prose.\n", 30)
-	if err := os.WriteFile(
-		filepath.Join(dir, "README.md"), []byte(tall), 0o644,
-	); err != nil {
+	rows := int(held(t, "lint-rows"))
+	tall := "# a page\n\n" +
+		strings.Repeat("a line of prose.\n", count.Next(rows))
+	openFile := os.FileMode(0o644)
+	page := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(page, []byte(tall), openFile); err != nil {
 		t.Fatal(err)
 	}
-	l, err := Describe([]struct {
-		Name string
-		Args []string
-	}{
-		{Name: "rows", Args: []string{"25"}},
-		{Name: "allow", Args: []string{"README.md", "rows"}},
+	linter, err := lint.Describe([]config.Rule{
+		config.Ruled("rows", "25"),
+		config.Ruled("allow", "README.md", "rows"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	found, err := l.Run(dir)
+	found, err := linter.Run(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range found {
-		if f.Rule == "height" {
-			t.Errorf("the waived page was still measured: %s", f)
+	for _, finding := range found {
+		if finding.Rule() == "height" {
+			t.Errorf("the waived page was still measured: %s", finding)
 		}
 	}
 }
@@ -481,48 +535,533 @@ func TestAllowRows(t *testing.T) {
 // chain, hook and script that used the verb as a gate carried on past real
 // findings. two sessions hit it independently on the same evening.
 func TestVerdictCountsLooks(t *testing.T) {
-	for _, c := range []struct {
+	line := count.One
+	look := looked(t)
+	for _, each := range []struct {
 		name  string
-		found []Finding
+		found []lint.Finding
 		fix   int
 		look  int
 		fails bool
 	}{
-		{"nothing at all", nil, 0, 0, false},
+		{"nothing at all", nil, count.Nothing, count.Nothing, false},
 		{
 			"only a look, and it must still fail",
-			[]Finding{{File: "a.go", Line: 7, Rule: "width", Look: true}},
-			0, 1, true,
+			[]lint.Finding{look},
+			count.Nothing, count.One, true,
 		},
 		{
 			"only a fix",
-			[]Finding{{File: "a.go", Line: 1, Rule: "paragraph"}},
-			1, 0, true,
+			[]lint.Finding{lint.Report("a.go", line, "paragraph", "")},
+			count.One, count.Nothing, true,
 		},
 		{
 			"both, and the message says both",
-			[]Finding{
-				{File: "a.go", Line: 1, Rule: "paragraph"},
-				{File: "a.go", Line: 7, Rule: "width", Look: true},
+			[]lint.Finding{
+				lint.Report("a.go", line, "paragraph", ""),
+				look,
 			},
-			1, 1, true,
+			count.One, count.One, true,
 		},
 	} {
-		fix, look, err := Verdict(c.found)
-		if fix != c.fix || look != c.look {
+		fix, look, err := lint.Verdict(each.found)
+		if fix != each.fix || look != each.look {
 			t.Errorf("%s: fix %d look %d, want %d and %d",
-				c.name, fix, look, c.fix, c.look)
+				each.name, fix, look, each.fix, each.look)
 		}
-		if (err != nil) != c.fails {
-			t.Errorf("%s: err %v, want failure=%v", c.name, err, c.fails)
+		if (err != nil) != each.fails {
+			t.Errorf("%s: err %v, want failure=%v", each.name, err,
+				each.fails)
 		}
 	}
-	// the counts belong in the message, because a person reads it
-	_, _, err := Verdict([]Finding{
-		{Rule: "width"},
-		{Rule: "width", Look: true},
-	})
-	if err == nil || !strings.Contains(err.Error(), "1 to fix, 1 to look at") {
+}
+
+// the counts belong in the verdict's message, because a person reads
+// it.
+func TestVerdictSaysBothCounts(t *testing.T) {
+	t.Parallel()
+	found := []lint.Finding{
+		lint.Report("", count.Nothing, "width", ""),
+		looked(t),
+	}
+	_, _, err := lint.Verdict(found)
+	if err == nil ||
+		!strings.Contains(err.Error(), "1 to fix, 1 to look at") {
 		t.Errorf("message %v, want both counts", err)
+	}
+}
+
+// noqaSource is a Go file where every kind of finding appears twice,
+// once on a line that says noqa and once on a line that does not, one
+// column past the width given.
+func noqaSource(width int) string {
+	return "package lib\n\nimport \"fmt\"\n\n" +
+		"// " + strings.Repeat("x", count.Next(width)) + " noqa\n" +
+		"// " + strings.Repeat("x", count.Next(width)) + "\n" +
+		"// HELLOWORLD said twice. noqa\n" +
+		"// HELLOWORLD said twice.\n" +
+		"func Say() {\n" +
+		"\tfmt.Println(\"x\") // noqa\n" +
+		"\tfmt.Println(\"x\")\n" +
+		"\t_ = \"blazing" + "-fast\" // noqa\n" +
+		"\t_ = \"blazing" + "-fast\"\n" +
+		"}\n"
+}
+
+// noqaTree is the noqa fixture: the source with every kind of finding
+// twice and the page with the mark, in a directory of its own.
+func noqaTree(t *testing.T, width int) string {
+	t.Helper()
+	dir := t.TempDir()
+	openDir := os.FileMode(0o755)
+	if err := os.MkdirAll(filepath.Join(dir, "lib"), openDir); err != nil {
+		t.Fatal(err)
+	}
+	openFile := os.FileMode(0o644)
+	source := filepath.Join(dir, "lib", "lib.go")
+	body := noqaSource(width)
+	if err := os.WriteFile(source, []byte(body), openFile); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(page, []byte("# x\n\nwow! noqa\n\nwow!\n"),
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// a line that says noqa, code or comment, is let off every rule; the
+// same lines without it are not.
+func TestNoqaLetsALineOff(t *testing.T) {
+	width := int(held(t, "lint-width"))
+	dir := noqaTree(t, width)
+	rule := lintWidth(t)
+	linter, err := lint.Describe([]config.Rule{
+		config.Ruled("width", rule),
+		config.Ruled("print"),
+		config.Ruled("exclaim"),
+		config.Ruled("shout"),
+		config.Ruled("words", "blazing"+"-fast"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, finding := range found {
+		if finding.Rule() != "staticcheck" {
+			file, line, rule := finding.File(), lineOf(finding),
+				finding.Rule()
+			got = append(got, fmt.Sprintf("%s:%d %s", file, line, rule))
+		}
+	}
+	want := []string{
+		"README.md:5 exclamation",
+		"lib/lib.go:6 width",
+		"lib/lib.go:8 shouting",
+		"lib/lib.go:11 bare print",
+		"lib/lib.go:13 word",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got\n%s\nwant\n%s", strings.Join(got, "\n"),
+			strings.Join(want, "\n"))
+	}
+}
+
+// a go file that does not parse is an error from the run, not a file
+// with no findings; and noqa on the first line lets that line off.
+func TestRunRefusesAFileThatDoesNotParse(t *testing.T) {
+	dir := t.TempDir()
+	openFile := os.FileMode(0o644)
+	bad := filepath.Join(dir, "bad.go")
+	if err := os.WriteFile(bad, []byte("package\n"), openFile); err != nil {
+		t.Fatal(err)
+	}
+	linter, err := lint.Describe([]config.Rule{config.Ruled("width", "80")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := linter.Run(dir); err == nil {
+		t.Error("a file that does not parse was linted")
+	}
+	width := int(held(t, "lint-width"))
+	wide := strings.Repeat("x", count.Next(width))
+	source := []byte("package x // " + wide + " noqa\n")
+	if err := os.WriteFile(bad, source, openFile); err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range found {
+		if finding.Rule() == "width" {
+			t.Errorf("the first line said noqa and was not let off: %v",
+				finding)
+		}
+	}
+}
+
+// habitsSource is a Go file with one comment for each habit, one that
+// says noqa, one behind a directive with a sample, and one plain.
+const habitsSource = `package p
+
+// one hangs on, because it can, so it does.
+func one() {}
+
+// two, with, three commas, here.
+func two() {}
+
+// A law is stated here.
+func three() {}
+
+// this was tried in 2026 and used to work.
+func four() {}
+
+// it chains, because it can, so it does.
+// plain says plain. noqa
+func five() {}
+
+/* a block, with, commas, here. */
+func fiveb() {}
+
+// it ran, so it stopped.
+func fivec() {}
+
+//go:generate thing
+// it chains, because it can, so it does.
+//	a, sample, with, commas
+func six() {}
+
+// plain says plain.
+func seven() {}
+`
+
+// each habit is a finding at its comment's first line, with the
+// sentence; noqa leaves the whole comment alone; directives and
+// samples are not prose; a plain comment has none.
+func TestCommentHabits(t *testing.T) {
+	dir := t.TempDir()
+	openFile := os.FileMode(0o644)
+	source := filepath.Join(dir, "p.go")
+	if err := os.WriteFile(source, []byte(habitsSource), openFile); err != nil {
+		t.Fatal(err)
+	}
+	linter, err := lint.Describe([]config.Rule{
+		config.Ruled("chain"),
+		config.Ruled("commas", "3"),
+		config.Ruled("opener"),
+		config.Ruled("history"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, finding := range found {
+		rule := finding.Rule()
+		if rule != "staticcheck" {
+			got = append(got, finding.String())
+		}
+	}
+	want := []string{
+		"lint: p.go:3: chain: one hangs on, because it can, so it does.",
+		"lint: p.go:6: commas: two, with, three commas, here.",
+		"lint: p.go:9: opener: A law is stated here.",
+		"lint: p.go:12: history: was tried",
+		"lint: p.go:25: chain: it chains, because it can, so it does.",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got\n%s\nwant\n%s", strings.Join(got, "\n"),
+			strings.Join(want, "\n"))
+	}
+}
+
+// commas wants a number, and at two finds the sentences with two or
+// more.
+func TestCommentHabitsCommasAtTwo(t *testing.T) {
+	dir := t.TempDir()
+	openFile := os.FileMode(0o644)
+	source := filepath.Join(dir, "p.go")
+	if err := os.WriteFile(source, []byte(habitsSource), openFile); err != nil {
+		t.Fatal(err)
+	}
+	two, err := lint.Describe([]config.Rule{config.Ruled("commas", "2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, _ := two.Run(dir)
+	if len(found) != int(held(t, "commas-two-findings")) {
+		t.Errorf("commas 2 finds %d, want the three sentences with "+
+			"two or more", len(found))
+	}
+	if _, err := lint.Describe([]config.Rule{config.Ruled("commas")}); err == nil {
+		t.Error("commas without a number was taken")
+	}
+}
+
+// a rule left off finds nothing, whatever the others find; commas 1
+// finds every sentence with a comma.
+func TestCommentHabitsOffAndOn(t *testing.T) {
+	dir := t.TempDir()
+	openFile := os.FileMode(0o644)
+	source := filepath.Join(dir, "p.go")
+	if err := os.WriteFile(source, []byte(habitsSource), openFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := only(t, dir, "chain"); !slices.Equal(got,
+		[]string{"chain", "chain"}) {
+		t.Errorf("chain alone: %v", got)
+	}
+	if got := only(t, dir, "history"); !slices.Equal(got,
+		[]string{"history"}) {
+		t.Errorf("history alone: %v", got)
+	}
+	want := []string{"commas", "commas", "commas", "commas"}
+	if got := only(t, dir, "commas", "1"); !slices.Equal(got, want) {
+		t.Errorf("commas 1: %v", got)
+	}
+}
+
+// only is what the one rule finds in the directory, by rule.
+func only(t *testing.T, dir, name string, args ...string) []string {
+	t.Helper()
+	linter, err := lint.Describe([]config.Rule{config.Ruled(name, args...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rules []string
+	for _, finding := range found {
+		if finding.Rule() != "staticcheck" {
+			rules = append(rules, finding.Rule())
+		}
+	}
+	return rules
+}
+
+// a long sentence is cut to fit a line, at sixty characters.
+func TestHabitCutsALongSentence(t *testing.T) {
+	dir := t.TempDir()
+	fits := int(held(t, "habit-line-fits"))
+	dots := "..."
+	cut := fits - len(dots)
+	frame := len("A " + ".")
+	long := "A " + strings.Repeat("x", fits) + "."
+	exact := "A " + strings.Repeat("y", fits-frame) + "."
+	past := "A " + strings.Repeat("z", count.Next(fits-frame)) + "."
+	src := "package p\n\n// " + long + "\nfunc a() {}\n\n// " + exact +
+		"\nfunc b() {}\n\n// " + past + "\nfunc c() {}\n"
+	openFile := os.FileMode(0o644)
+	source := filepath.Join(dir, "p.go")
+	if err := os.WriteFile(source, []byte(src), openFile); err != nil {
+		t.Fatal(err)
+	}
+	linter, err := lint.Describe([]config.Rule{config.Ruled("opener")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil || len(found) != count.Next(count.Next(count.One)) {
+		t.Fatalf("%v, %v", found, err)
+	}
+	first, second, third := count.First, count.Next(count.First),
+		count.Next(count.Next(count.First))
+	if found[first].Text() != long[:cut]+dots ||
+		len(found[first].Text()) != fits {
+		t.Errorf("long: %q", found[first].Text())
+	}
+	if found[second].Text() != exact {
+		t.Errorf("sixty: %q", found[second].Text())
+	}
+	if found[third].Text() != past[:cut]+dots {
+		t.Errorf("sixty-one: %q", found[third].Text())
+	}
+}
+
+// a sentence ends at a stop or a question mark followed by space.
+func TestSentences(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		text string
+		want []string
+	}{
+		{"no, end", []string{"no, end"}},
+		{"a, x. b, y? c, z", []string{"a, x.", "b, y?", "c, z"}},
+		{". then, x", []string{"then, x"}},
+		{"? huh, x", []string{"huh, x"}},
+		{"e.g. this, that", []string{"this, that"}},
+		{"x, y.  z, w", []string{"x, y.", "z, w"}},
+		{"1.5, 2.5 is a number.", []string{"1.5, 2.5 is a number."}},
+		{"done, ok. ", []string{"done, ok."}},
+		{"one, a.\ttwo, b.", []string{"one, a.", "two, b."}},
+	}
+	var comments []string
+	for _, each := range cases {
+		comments = append(comments, "// "+each.text)
+	}
+	linter := described(t, config.Ruled("commas", "1"))
+	for place, found := range chunked(t, linter, comments...) {
+		if got := texts(found); !slices.Equal(got, cases[place].want) {
+			t.Errorf("sentences(%q) = %q, want %q", cases[place].text, got,
+				cases[place].want)
+		}
+	}
+}
+
+// Describe refuses an allow with no lint, an allow for a lint it does
+// not know, and words with none.
+func TestDescribeRefusesBadLines(t *testing.T) {
+	bad := [][]config.Rule{
+		{config.Ruled("allow", "README.md")},
+		{config.Ruled("allow", "README.md", "nosuch")},
+		{config.Ruled("words")},
+	}
+	for _, rules := range bad {
+		if _, err := lint.Describe(rules); err == nil {
+			t.Errorf("Describe(%v) took it", rules)
+		}
+	}
+	unknown := bad[count.Next(count.First)]
+	_, err := lint.Describe(unknown)
+	if err == nil ||
+		err.Error() != `lint allow README.md: no lint called "nosuch"` {
+		t.Errorf("the unknown lint is not named: %v", err)
+	}
+	spare := int(held(t, "spare-width"))
+	given := strconv.Itoa(spare)
+	linter, err := lint.Describe([]config.Rule{config.Ruled("width",
+		given)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	atSpare := "// " + strings.Repeat("x", spare-len("// "))
+	past := atSpare + "x"
+	src := "package x\n\n" + atSpare + "\n\n" + past + "\n"
+	found := goFound(t, linter, src)
+	if len(found) != count.One || lineOf(found[count.First]) != onLine(src, past) {
+		t.Errorf("a width of %d: a line of %d is fine and one more is "+
+			"not: %v", spare, spare, found)
+	}
+	allowing, err := lint.Describe([]config.Rule{
+		config.Ruled("width", "5"),
+		config.Ruled("allow", "a.go", "width", "chain"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	where := ranOn(t, allowing, map[string]string{
+		"a.go": "package a // wide\n", "b.go": "package b // wide\n"})
+	if len(where) != count.One || where[count.First].File() != "b.go" {
+		t.Errorf("allow a.go width: %v", where)
+	}
+}
+
+// a generated file is left alone whole; a print in package main is
+// fine; a paragraph rule of one flags a two-line paragraph.
+func TestGoFileEdges(t *testing.T) {
+	dir := t.TempDir()
+	openDir := os.FileMode(0o755)
+	if err := os.MkdirAll(filepath.Join(dir, "lib"), openDir); err != nil {
+		t.Fatal(err)
+	}
+	openFile := os.FileMode(0o644)
+	made := filepath.Join(dir, "gen.go")
+	body := []byte("// Code generated by x. DO NOT EDIT.\n\n" +
+		"package main\n\nfunc a() {}\n")
+	if err := os.WriteFile(made, body, openFile); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(dir, "main.go")
+	main := []byte("package main\n\nimport \"fmt\"\n\n// main says.\n" +
+		"// and says.\nfunc main() { fmt.Println(1) }\n")
+	if err := os.WriteFile(plain, main, openFile); err != nil {
+		t.Fatal(err)
+	}
+	linter, err := lint.Describe([]config.Rule{
+		config.Ruled("comments"),
+		config.Ruled("print"),
+		config.Ruled("paragraph", "1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := linter.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, finding := range found {
+		if finding.Rule() != "staticcheck" {
+			got = append(got, finding.String())
+		}
+	}
+	want := []string{"lint: main.go:5: paragraph: 2 lines; a paragraph holds 1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// a method with type parameters is go 1.27's, and lint reads it like
+// any other function: this one has no comment and is found.
+func TestGoFileReadsGenericMethods(t *testing.T) {
+	t.Parallel()
+	body := "package generic\n\n" +
+		"type box struct{ n int }\n\n" +
+		"func (b box) plus[T ~int](v T) int { return b.n + int(v) }\n"
+	linter := described(t, config.Ruled("comments"))
+	found := goFound(t, linter, body)
+	line := int(held(t, "generic-method-line"))
+	if len(found) != count.One ||
+		found[count.First].Rule() != "uncommented" ||
+		lineOf(found[count.First]) != line {
+		t.Errorf("a generic method: %+v", found)
+	}
+}
+
+// a file lint cannot parse, in a module asking for a newer go than game
+// was built with, says so.
+func TestRunSaysTheModuleWantsANewerGo(t *testing.T) {
+	dir := t.TempDir()
+	openFile := os.FileMode(0o644)
+	module := filepath.Join(dir, "go.mod")
+	if err := os.WriteFile(module, []byte("module x\n\ngo 1.99\n"),
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "bad.go")
+	if err := os.WriteFile(bad, []byte("package x\n\nfunc (\n"),
+		openFile); err != nil {
+		t.Fatal(err)
+	}
+	linter := described(t, config.Ruled("comments"))
+	_, err := linter.Run(dir)
+	if err == nil || !strings.Contains(err.Error(), "asks for go1.99") {
+		t.Errorf("a newer module's parse error: %v", err)
+	}
+}
+
+// TestAllowWaivesTheCommentsRule: files allowed the comments rule are not
+// held to it, and files that are not allowed are. The finding is the same
+// for both, so the allowance alone stops it.
+func TestAllowWaivesTheCommentsRule(t *testing.T) {
+	t.Parallel()
+	linter := described(t, config.Ruled("comments"),
+		config.Ruled("allow", "x.go", "comments"))
+	where := ranOn(t, linter, map[string]string{
+		"x.go": "package x\n\nfunc F() {}\n",
+		"y.go": "package x\n\nfunc G() {}\n"})
+	if len(where) != count.One || where[count.First].File() != "y.go" {
+		t.Errorf("allow x.go comments: %v", where)
 	}
 }
