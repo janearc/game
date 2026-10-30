@@ -7,7 +7,7 @@ toolchain go1.27.0
 require (
 	github.com/go-git/go-billy/v5 v5.6.2
 	github.com/go-git/go-git/v5 v5.16.4
-	github.com/janearc/puzzlemouth v0.1.2
+	github.com/janearc/puzzlemouth v0.1.3
 	go.uber.org/mock v0.6.0
 	pgregory.net/rapid v1.3.0
 )

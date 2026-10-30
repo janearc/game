@@ -7,7 +7,7 @@
 // home. a "project NAME" line opens a block of indented lines.
 //
 // pzm reads the grammar into the file type declared in file.go: keys are
-// lowercase, a block is indented with tabs or with spaces and not both,
+// lowercase, a block's lines are indented with tabs, spaces or both,
 // and a command follows " :: ". this package settles what lines mean.
 //
 // the sweep's word list comes from the dotfile only. lint lines in the

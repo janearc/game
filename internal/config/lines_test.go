@@ -355,18 +355,20 @@ func TestAKeyIsLowercase(t *testing.T) {
 	}
 }
 
-// TestABlockIsIndentedOneWay: tabs and spaces are each a block's indent,
-// but a block that changes from one to the other is refused.
-func TestABlockIsIndentedOneWay(t *testing.T) {
+// TestABlockMayMixTabsAndSpaces: any leading whitespace indents a line
+// into its block, tabs, spaces or both, as game has always read them.
+func TestABlockMayMixTabsAndSpaces(t *testing.T) {
 	cfg, err := parsed("project a\n  road a.git\n   dist d.git\n", true)
 	if err != nil || cfg.Remotes(true)["a"] != "d.git" {
 		t.Errorf("spaces of different widths: %v, %v", cfg.Remotes(true), err)
 	}
-	_, err = parsed("project a\n\troad a.git\n  dist d.git\n", true)
-	if err == nil || !strings.Contains(err.Error(),
-		"the.file:3: dist: it is indented with spaces, but this block "+
-			"is indented with tabs") {
-		t.Errorf("tabs then spaces: %v, want it refused", err)
+	cfg, err = parsed("project a\n\troad a.git\n  dist d.git\n", true)
+	if err != nil || cfg.Remotes(true)["a"] != "d.git" {
+		t.Errorf("tabs then spaces: %v, %v", cfg.Remotes(true), err)
+	}
+	cfg, err = parsed("project a\n  road a.git\n\tdist d.git\n", true)
+	if err != nil || cfg.Remotes(true)["a"] != "d.git" {
+		t.Errorf("spaces then tabs: %v, %v", cfg.Remotes(true), err)
 	}
 }
 

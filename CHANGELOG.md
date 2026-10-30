@@ -1,5 +1,9 @@
 # changelog
 
+## v0.4.3
+
+- one regression in pzm
+
 ## v0.4.2
 
 - moved all the non-golang targets out to `dismay`

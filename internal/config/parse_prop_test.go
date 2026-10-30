@@ -42,8 +42,8 @@ func drawProjects(
 	keys := rapid.SliceOfNDistinct(plainWord, count.Nothing, mostSets, same)
 	for _, name := range names.Draw(t, "projects") {
 		*lines = append(*lines, "", "# "+name, "project "+name)
-		// a block is indented one way throughout: pzm refuses a block
-		// that changes between tabs and spaces
+		// a block's indent, drawn once per block; a mix is read too
+		// (TestABlockMayMixTabsAndSpaces)
 		indent := rapid.SampledFrom([]string{"\t", "    "}).Draw(t, "indent")
 		road := plainWord.Draw(t, "road")
 		*lines = append(*lines, indent+"road "+road)
