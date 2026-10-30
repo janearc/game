@@ -55,7 +55,7 @@ func TestStackLaysNothingFromAnUnnamedDirectory(t *testing.T) {
 }
 
 // patchedNone is whether the stack laid no patches anywhere.
-func patchedNone(out release.Stacked) bool {
+func patchedNone(out *release.Stacked) bool {
 	for _, name := range []string{"a", "b"} {
 		if count.Positive(out.Patched(name)) {
 			return false

@@ -1,7 +1,6 @@
 package lint_test
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,18 +55,6 @@ func TestHardenRefusesMalformedGo(t *testing.T) {
 	writeGo(t, dir, "broken.go", "package broken\nfunc {\n")
 	if _, err := lint.Hardened(dir); err == nil {
 		t.Fatal("malformed Go was reported clean")
-	}
-}
-
-func TestHardenRefusesUnreadableNativeSource(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "missing.c")
-	if err := os.Symlink("absent", path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := lint.Hardened(dir); err == nil {
-		t.Fatal("unreadable native source was reported clean")
 	}
 }
 

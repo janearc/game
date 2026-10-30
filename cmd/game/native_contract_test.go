@@ -4,98 +4,45 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/janearc/game/internal/count"
-	"go.uber.org/mock/gomock"
 )
 
 func TestNativeGoChecksRefuseMissingCommands(t *testing.T) {
 	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	if err := aslrGoBy(t.TempDir(), nil, commands.Run, io.Discard); err == nil {
+	commands := notRun(t)
+	if err := aslrGo(t.TempDir(), nil, commands, io.Discard); err == nil {
 		t.Fatal("ASLR accepted missing command sources")
 	}
-	if err := leaksGoBy(t.TempDir(), nil, commands.Run, io.Discard); err == nil {
+	if err := leaksGo(t.TempDir(), nil, commands, io.Discard); err == nil {
 		t.Fatal("leak checking accepted missing command sources")
 	}
 }
 
-func TestLeaksXcodeRejectsInvalidArgumentsBeforeTools(t *testing.T) {
+func TestLeaksRejectsInvalidArgumentsBeforeTools(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
-		{"xcode", "-unknown"}, {"xcode", "word"}, {"xcode"},
-		{"xcode", "-scheme", "Sample", "-with", "unknown-library"},
+		{"xcode", "-unknown"}, {"xcode", "word"}, {"xcode"}, {"-unknown"},
+		{"c", "t.c"}, {"go", "word"},
 	} {
-		commands := NewMockcommandRunner(gomock.NewController(t))
-		err := leaksBy(t.TempDir(), args, commands.Run, noFetch,
-			io.Discard, io.Discard)
+		commands := notRun(t)
+		err := argsLeaksBy(t, t.TempDir(), args, commands, io.Discard)
 		if err == nil {
 			t.Fatalf("invalid arguments accepted: %v", args)
 		}
 	}
 }
 
-func TestLeaksCRejectsInvalidFlagsBeforeTools(t *testing.T) {
-	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	err := leaksCBy(t.TempDir(), []string{"-unknown"}, commands.Run,
-		noFetch, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("invalid C flag accepted")
-	}
-}
-
-func TestLeaksXcodeStopsAtBuildFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("xcode build refused")
-	commands.EXPECT().Run(dir, xcodeBuilder, gomock.Any()).Return("", failure)
-	err := leaksXcodeBy(dir, []string{"-scheme", "Sample"}, commands.Run,
-		noFetch, io.Discard, io.Discard)
-	if !errors.Is(err, failure) {
-		t.Fatalf("xcode build failure: %v", err)
-	}
-}
-
-func TestLeaksXcodeStopsAtSanitizerFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("xcode sanitizer refused")
-	gomock.InOrder(
-		commands.EXPECT().Run(dir, xcodeBuilder, gomock.Any()).Return("", nil),
-		commands.EXPECT().Run(dir, xcodeBuilder, gomock.Any()).Return("", failure),
-	)
-	err := leaksXcodeBy(dir, []string{"-scheme", "Sample"}, commands.Run,
-		noFetch, io.Discard, io.Discard)
-	if !errors.Is(err, failure) {
-		t.Fatalf("xcode sanitizer failure: %v", err)
-	}
-}
-
-func TestLeaksXcodeRefusesFileInPlaceOfBin(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "bin"), "occupied")
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	err := leaksXcodeBy(dir, []string{"-scheme", "Sample"}, commands.Run,
-		noFetch, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("file in place of bin accepted")
-	}
-}
-
-func TestHardenXcodeRejectsInvalidArgumentsBeforeTools(t *testing.T) {
+func TestHardenRejectsInvalidArgumentsBeforeTools(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
-		{"xcode", "-unknown"}, {"xcode", "word"}, {"xcode"},
+		{"xcode", "-unknown"}, {"xcode", "word"}, {"xcode"}, {"-unknown"},
 	} {
-		commands := NewMockcommandRunner(gomock.NewController(t))
-		err := hardenBy(t.TempDir(), args, commands.Run, io.Discard, io.Discard)
+		commands := notRun(t)
+		err := argsHardenBy(t, t.TempDir(), args, commands, io.Discard)
 		if err == nil {
 			t.Fatalf("invalid arguments accepted: %v", args)
 		}
@@ -107,12 +54,12 @@ func TestASLRGoStopsAtBuildFailure(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "cmd", "sample", "main.go"), "package main\n")
 	write(t, filepath.Join(dir, "cmd", "notes"), "not a command\n")
-	commands := NewMockcommandRunner(gomock.NewController(t))
 	failure := errors.New("compiler refused")
-	commands.EXPECT().Run(dir, "go", "build", "-trimpath", "-o",
-		"bin/sample", "./cmd/sample").Return("", failure)
+	commands := runs(t, ranStep{dir: dir, name: "go",
+		args: []string{"build", "-trimpath", "-o", "bin/sample",
+			"./cmd/sample"}, err: failure})
 	var out bytes.Buffer
-	err := aslrBy(dir, []string{"go"}, commands.Run, noFetch, &out, io.Discard)
+	err := argsAslrBy(t, dir, []string{"go"}, commands, &out)
 	if !errors.Is(err, failure) || out.Len() != count.Nothing {
 		t.Fatalf("build failure %v, report %q", err, out.String())
 	}
@@ -123,32 +70,19 @@ func TestASLRGoRefusesFileInPlaceOfBin(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "cmd", "notes"), "not a command\n")
 	write(t, filepath.Join(dir, "bin"), "occupied")
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	if err := aslrGoBy(dir, nil, commands.Run, io.Discard); err == nil {
+	commands := notRun(t)
+	if err := aslrGo(dir, nil, commands, io.Discard); err == nil {
 		t.Fatal("file in place of bin accepted")
 	}
 }
 
-func TestASLRRefusesCFlagsBeforeRunningTools(t *testing.T) {
+func TestASLRRefusesUnknownFlagsBeforeRunningTools(t *testing.T) {
 	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	err := aslrCBy(t.TempDir(), []string{"-unknown"}, commands.Run,
-		noFetch, io.Discard, io.Discard)
+	commands := notRun(t)
+	err := argsAslrBy(t, t.TempDir(), []string{"-unknown"}, commands,
+		io.Discard)
 	if err == nil {
-		t.Fatal("unknown C flag accepted")
-	}
-}
-
-func TestASLRXcodePropagatesBuildFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("xcode refused")
-	commands.EXPECT().Run(dir, xcodeBuilder, gomock.Any()).Return("", failure)
-	err := aslrBy(dir, []string{"xcode", "-scheme", "Sample"}, commands.Run,
-		noFetch, io.Discard, io.Discard)
-	if !errors.Is(err, failure) {
-		t.Fatalf("xcode failure lost: %v", err)
+		t.Fatal("unknown flag accepted")
 	}
 }
 
@@ -156,24 +90,71 @@ func TestASLRBinStopsAtInspectionFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeMach(t, dir, "bin/sample")
-	commands := NewMockcommandRunner(gomock.NewController(t))
 	failure := errors.New("header refused")
-	commands.EXPECT().Run(dir, otool, "-hv", "bin/sample").Return("", failure)
-	if err := aslrBinBy(dir, commands.Run, io.Discard); !errors.Is(err, failure) {
+	commands := runs(t, ranStep{dir: dir, name: otool,
+		args: []string{"-hv", "bin/sample"}, err: failure})
+	if err := aslrBin(dir, commands, io.Discard, filepath.Rel); !errors.Is(err, failure) {
 		t.Fatalf("inspection failure lost: %v", err)
 	}
 }
 
-func TestBuildCProgramStopsAtLinkFailure(t *testing.T) {
+func TestASLRBinRefusesMissingBinaries(t *testing.T) {
 	t.Parallel()
+	commands := notRun(t)
+	err := aslrBin(t.TempDir(), commands, io.Discard, filepath.Rel)
+	if !errors.Is(err, errNoBinaries) {
+		t.Fatalf("missing binaries: %v", err)
+	}
+}
+
+// relativeFailure is a path arithmetic that fails, for the base given or
+// for every base when none is.
+type relativeFailure struct {
+	base string
+	err  error
+}
+
+func (failure relativeFailure) relative(base, target string) (string, error) {
+	if failure.base == "" || failure.base == base {
+		return "", failure.err
+	}
+	return filepath.Rel(base, target)
+}
+
+func TestASLRBinAndTheWalkPropagateRelativePathFailure(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("relative path refused")
 	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("link refused")
-	commands.EXPECT().Run(dir, cCompiler, gomock.Any()).Return("", failure)
-	program, err := buildCProgram(dir, "", []string{"sample.c"}, nil,
-		commands.Run, noFetch)
-	if !errors.Is(err, failure) || program != "" {
-		t.Fatalf("link failure produced %q: %v", program, err)
+	relative := relativeFailure{base: dir, err: failure}.relative
+	writeMach(t, dir, "bin/sample")
+	commands := notRun(t)
+	if err := aslrBin(dir, commands, io.Discard, relative); !errors.Is(err, failure) {
+		t.Fatalf("relative path failure lost: %v", err)
+	}
+	finding := &findingMachO{bin: t.TempDir(),
+		relative: relativeFailure{err: failure}.relative}
+	if err := finding.visit("elsewhere", nil, nil); !errors.Is(err, failure) {
+		t.Fatalf("walk relative path failure lost: %v", err)
+	}
+}
+
+func TestVerbsRefuseAWordBeforeAnyTool(t *testing.T) {
+	t.Parallel()
+	work := repoAt(t.TempDir())
+	for _, each := range []struct {
+		name string
+		do   verb
+		want string
+	}{
+		{"aslr", aslrVerb, "name go"},
+		{"leaks", leaksVerb, "name go"},
+		{"cover", coverVerb, "takes none"},
+	} {
+		err := viaPzm(t, each.name, each.do, work, blankConfig(),
+			[]string{"rust"})
+		if err == nil || !strings.Contains(err.Error(), each.want) {
+			t.Errorf("%s rust: %v", each.name, err)
+		}
 	}
 }
 
@@ -199,12 +180,12 @@ func TestLeaksGoStopsAtBuildFailure(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "cmd", "sample", "main.go"), "package main\n")
 	write(t, filepath.Join(dir, "cmd", "notes"), "not a command\n")
-	commands := NewMockcommandRunner(gomock.NewController(t))
 	failure := errors.New("compiler refused")
-	commands.EXPECT().Run(dir, "go", "build", "-trimpath", "-o",
-		"bin/sample", "./cmd/sample").Return("", failure)
+	commands := runs(t, ranStep{dir: dir, name: "go",
+		args: []string{"build", "-trimpath", "-o", "bin/sample",
+			"./cmd/sample"}, err: failure})
 	var out bytes.Buffer
-	err := leaksBy(dir, []string{"go"}, commands.Run, noFetch, &out, io.Discard)
+	err := argsLeaksBy(t, dir, []string{"go"}, commands, &out)
 	if !errors.Is(err, failure) || out.Len() != count.Nothing {
 		t.Fatalf("build failure %v, report %q", err, out.String())
 	}
@@ -214,16 +195,16 @@ func TestLeaksGoStopsAtLeakFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "cmd", "sample", "main.go"), "package main\n")
-	commands := NewMockcommandRunner(gomock.NewController(t))
 	failure := errors.New("allocation leaked")
-	gomock.InOrder(
-		commands.EXPECT().Run(dir, "go", "build", "-trimpath", "-o",
-			"bin/sample", "./cmd/sample").Return("", nil),
-		commands.EXPECT().Run(dir, leaksTool, "-q", "--atExit", "--",
-			"bin/sample").Return("leak report\n", failure),
+	commands := runs(t,
+		ranStep{dir: dir, name: "go", args: []string{"build", "-trimpath",
+			"-o", "bin/sample", "./cmd/sample"}},
+		ranStep{dir: dir, name: leaksTool, args: []string{"-q",
+			"--atExit", "--", "bin/sample"}, out: "leak report\n",
+			err: failure},
 	)
 	var out bytes.Buffer
-	if err := leaksGoBy(dir, nil, commands.Run, &out); !errors.Is(err, failure) {
+	if err := leaksGo(dir, nil, commands, &out); !errors.Is(err, failure) {
 		t.Fatalf("leak failure lost: %v", err)
 	}
 	if out.String() != "leak report\n" {
@@ -236,93 +217,8 @@ func TestLeaksGoRefusesFileInPlaceOfBin(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "cmd", "notes"), "not a command\n")
 	write(t, filepath.Join(dir, "bin"), "occupied")
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	if err := leaksGoBy(dir, nil, commands.Run, io.Discard); err == nil {
+	commands := notRun(t)
+	if err := leaksGo(dir, nil, commands, io.Discard); err == nil {
 		t.Fatal("file in place of bin accepted")
-	}
-}
-
-func TestLeakBinRefusesMissingBinaries(t *testing.T) {
-	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	err := leakBinBy(t.TempDir(), commands.Run, io.Discard)
-	if !errors.Is(err, errNoBinaries) {
-		t.Fatalf("missing binaries: %v", err)
-	}
-}
-
-func TestLeakBinStopsAtLeakFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	writeMach(t, dir, "bin/sample")
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("leaks refused")
-	commands.EXPECT().Run(dir, leaksTool, "-q", "--atExit", "--",
-		"bin/sample").Return("", failure)
-	if err := leakBinBy(dir, commands.Run, io.Discard); !errors.Is(err, failure) {
-		t.Fatalf("leak failure lost: %v", err)
-	}
-}
-
-func TestLeakBuildRefusesInvalidSource(t *testing.T) {
-	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	program, err := buildLeakProgram(t.TempDir(), "", nil, nil,
-		commands.Run, noFetch)
-	if !errors.Is(err, errNoSources) || program != "" {
-		t.Fatalf("invalid source produced %q: %v", program, err)
-	}
-}
-
-func TestLeakBuildRefusesUnknownLibrary(t *testing.T) {
-	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	program, err := buildLeakProgram(t.TempDir(), "", []string{"sample.c"},
-		[]string{"unknown-library"}, commands.Run, noFetch)
-	if err == nil || program != "" {
-		t.Fatalf("unknown library produced %q: %v", program, err)
-	}
-}
-
-func TestLeakBuildRefusesFileInPlaceOfBin(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "bin"), "occupied")
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	program, err := buildLeakProgram(dir, "", []string{"sample.c"}, nil,
-		commands.Run, noFetch)
-	if err == nil || program != "" {
-		t.Fatalf("unwritable output produced %q: %v", program, err)
-	}
-}
-
-func TestLeakBuildStopsAtCompilerFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("compiler refused")
-	commands.EXPECT().Run(dir, cCompiler, gomock.Any()).Return("", failure)
-	program, err := buildLeakProgram(dir, "", []string{"sample.c"}, nil,
-		commands.Run, noFetch)
-	if !errors.Is(err, failure) || program != "" {
-		t.Fatalf("failed compiler produced %q: %v", program, err)
-	}
-}
-
-func TestHardenPropagatesUnreadableBinaryTree(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "bin")
-	if err := os.Mkdir(bin, os.FileMode(0o755)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(bin, count.Nothing); err != nil {
-		t.Fatal(err)
-	}
-	open := os.FileMode(0o755)
-	t.Cleanup(shutDir{dir: bin, open: open}.reopen)
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	if _, err := hardenBeyondSource(dir, commands.Run); err == nil {
-		t.Fatal("unreadable binary tree passed hardening")
 	}
 }

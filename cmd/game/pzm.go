@@ -19,27 +19,21 @@ type pzmFlagKind int
 const (
 	pzmSwitch pzmFlagKind = iota
 	pzmValue
-	pzmList
 )
 
 type pzmFlag struct {
-	name  string
-	short pv.Short
-	help  string
-	kind  pzmFlagKind
+	name string
+	help string
+	kind pzmFlagKind
 }
 
 // declare gives pzm the flag's name, kind and help.
 func (flag pzmFlag) declare() pzm.Flag {
 	name, help := pv.Name(flag.name), pv.Help(flag.help)
-	switch flag.kind {
-	case pzmSwitch:
-		return pzm.Switch(name, flag.short, help)
-	case pzmValue:
-		return pzm.Value(name, flag.short, help)
-	default:
-		return pzm.List(name, flag.short, help)
+	if flag.kind == pzmSwitch {
+		return pzm.Switch(name, pv.NoShort, help)
 	}
+	return pzm.Value(name, pv.NoShort, help)
 }
 
 // switchFlag describes a flag that takes no value.
@@ -52,57 +46,28 @@ func valueFlag(name, help string) pzmFlag {
 	return pzmFlag{name: name, help: help, kind: pzmValue}
 }
 
-// outputFlag describes the program name flag, -o.
-func outputFlag() pzmFlag {
-	return pzmFlag{name: "o", short: 'o',
-		help: "the program's name", kind: pzmValue}
-}
-
-// listFlag describes a flag that takes comma-separated words.
-func listFlag(name, help string) pzmFlag {
-	return pzmFlag{name: name, help: help, kind: pzmList}
-}
-
 var (
-	libraryFlags = []pzmFlag{
-		outputFlag(),
-		listFlag("with", "a C library to fetch, build and link"),
+	coverPzmFlags = []pzmFlag{
+		switchFlag("html", "write Go's html report, say where"),
 	}
-	xcodeFlags = []pzmFlag{
-		valueFlag("scheme", "the Xcode scheme"),
-		valueFlag("configuration", "the Xcode build configuration"),
-		valueFlag("project", "an Xcode project"),
-		valueFlag("workspace", "an Xcode workspace"),
-		valueFlag("destination", "the Xcode destination"),
-	}
-	buildXcodePzmFlags = append(append([]pzmFlag{}, xcodeFlags...),
-		listFlag("with", "a Swift library to fetch"))
-	nativeFlags = append(append([]pzmFlag{}, libraryFlags...),
-		xcodeFlags...)
-	fuzzFlags = append(append([]pzmFlag{}, libraryFlags...),
-		valueFlag("time", "how long to fuzz, in seconds"),
-		valueFlag("runtime", "libFuzzer's runtime"))
-	mutantPzmFlags = append(append([]pzmFlag{}, fuzzFlags...),
+	mutantPzmFlags = []pzmFlag{
 		valueFlag("only", "a regular expression for file:function"),
 		valueFlag("again", "an earlier report's surviving mutants"),
 		valueFlag("report", "where to write the mutation report"),
 		valueFlag("workers", "how many mutants run at once"),
 		valueFlag("timeout", "how long one mutant's tests may run"),
-		switchFlag("bench", "estimate the run without mutating"))
+		switchFlag("bench", "estimate the run without mutating"),
+	}
 	releasePzmFlags = []pzmFlag{
 		switchFlag("i-mean-it", "release over lint findings"),
 		valueFlag("from", "where stack members come from"),
 		switchFlag("publish", "confirm that the dist is public"),
 	}
 	legacyLongFlags = map[string]bool{
-		"again": true, "bench": true, "cache": true,
-		"configuration": true, "count": true, "destination": true,
+		"again": true, "bench": true, "cache": true, "count": true,
 		"dry": true, "from": true, "here": true, "i-mean-it": true,
-		"look": true, "only": true, "parallel": true, "project": true,
-		"publish": true, "report": true, "runtime": true,
-		"scheme": true, "time": true, "timeout": true, "with": true,
-		"workers":   true,
-		"workspace": true,
+		"look": true, "only": true, "parallel": true, "publish": true,
+		"report": true, "timeout": true, "workers": true,
 	}
 )
 
@@ -152,19 +117,16 @@ func pzmVerbs() []pzmVerb {
 		writeLocal:  writeFacts(pv.ThisMachine),
 		writeRemote: writeFacts(pv.Outside),
 	}
-	return slices.Concat(pzmBasicVerbs(facts), pzmNativeVerbs(facts),
+	return slices.Concat(pzmBasicVerbs(facts), pzmAuditVerbs(facts),
 		pzmWorkVerbs(facts), pzmRemoteVerbs(facts))
 }
 
 // pzmBasicVerbs is the commands for an ordinary local build.
 func pzmBasicVerbs(facts pzmFactSet) []pzmVerb {
 	return []pzmVerb{
-		{name: "version", help: "says which commit this binary is",
-			do: ageVerb, facts: facts.readLight},
-		{name: "help-claude", help: "prints the agent help",
-			do: helpVerb, facts: facts.readLight},
 		{name: "check", help: "runs gofmt, vet and tests",
-			do: withoutWords(check), facts: facts.readHeavy},
+			do:    withoutWords(running(check)),
+			facts: facts.readHeavy},
 		{name: "mutants", help: "runs mutation tests",
 			do: mutantsVerb, facts: facts.writeLocal,
 			flags: mutantPzmFlags},
@@ -180,33 +142,18 @@ func pzmBasicVerbs(facts pzmFactSet) []pzmVerb {
 	}
 }
 
-// pzmNativeVerbs is the commands for native builds and audits.
-func pzmNativeVerbs(facts pzmFactSet) []pzmVerb {
+// pzmAuditVerbs is the commands that measure and audit Go builds.
+func pzmAuditVerbs(facts pzmFactSet) []pzmVerb {
 	return []pzmVerb{
-		{name: "build-c", help: "builds a hardened C program",
-			do: buildCVerb, facts: facts.writeRemote,
-			flags: libraryFlags},
-		{name: "build-xcode", help: "builds an Xcode scheme",
-			do: buildXcodeVerb, facts: facts.writeLocal,
-			flags: buildXcodePzmFlags},
-		{name: "cover", help: "measures C or Xcode coverage",
+		{name: "cover", help: "measures Go coverage",
 			do: coverVerb, facts: facts.writeRemote,
-			flags: nativeFlags},
-		{name: "fuzz", help: "fuzzes a C program",
-			do: fuzzVerb, facts: facts.writeRemote,
-			flags: fuzzFlags},
-		{name: "race", help: "checks C or Xcode code for races",
-			do: raceVerb, facts: facts.writeRemote,
-			flags: nativeFlags},
+			flags: coverPzmFlags},
 		{name: "aslr", help: "checks binaries for PIE",
-			do: aslrVerb, facts: facts.writeRemote,
-			flags: nativeFlags},
-		{name: "leaks", help: "checks C, Xcode or Go code for leaks",
-			do: leaksVerb, facts: facts.writeRemote,
-			flags: nativeFlags},
-		{name: "harden", help: "audits source, binaries and modules",
-			do: hardenVerb, facts: facts.readHeavy,
-			flags: xcodeFlags},
+			do: aslrVerb, facts: facts.writeRemote},
+		{name: "leaks", help: "checks Go code for leaks",
+			do: leaksVerb, facts: facts.writeRemote},
+		{name: "harden", help: "audits Go source and modules",
+			do: hardenVerb, facts: facts.readHeavy},
 	}
 }
 
@@ -239,7 +186,7 @@ func pzmWorkVerbs(facts pzmFactSet) []pzmVerb {
 					"forget Go's build and test caches"),
 			}},
 		{name: "trees", help: "shows the road and dist",
-			do: treesVerb, facts: facts.readLight},
+			do: withoutWords(trees), facts: facts.readLight},
 		{name: "history", help: "shows the latest release and commits",
 			do: whoVerb, facts: readRemoteFacts()},
 	}
@@ -251,13 +198,13 @@ func pzmRemoteVerbs(facts pzmFactSet) []pzmVerb {
 		{name: "push", help: "pushes this branch to the road",
 			do: withoutWords(pushRoad), facts: facts.writeRemote},
 		{name: "stick", help: "claims this repository",
-			do:    bareVerb("stick", aboutStick, doStick),
+			do:    bareVerb("stick", aboutStick, stick),
 			facts: facts.writeRemote},
 		{name: "sticky", help: "fast-forwards to the road's tip",
-			do:    bareVerb("sticky", aboutSticky, doSticky),
+			do:    bareVerb("sticky", aboutSticky, follow),
 			facts: facts.writeRemote},
 		{name: "unstick", help: "releases this repository's claim",
-			do:    bareVerb("unstick", aboutUnstick, doUnstick),
+			do:    bareVerb("unstick", aboutUnstick, unstick),
 			facts: facts.writeRemote},
 		{name: "release", help: "prepares, diffs or pushes a release",
 			do: releaseVerb, facts: facts.writeRemote,
@@ -268,7 +215,7 @@ func pzmRemoteVerbs(facts pzmFactSet) []pzmVerb {
 			do: sweepVerb, facts: facts.readLight},
 		{name: "gargle-balls-dario", help: "answers the hidden verb",
 			do: bareVerb(
-				"gargle-balls-dario", aboutGargle, doGargle),
+				"gargle-balls-dario", aboutGargle, gargle),
 			facts: facts.readLight},
 	}
 }
@@ -299,55 +246,7 @@ func (declared declaredPzmVerb) run(call pzm.Call) error {
 	if err != nil {
 		return err
 	}
-	args := declared.legacyArgs(call)
-	return declared.described.do(here, cfg, args)
-}
-
-// legacyArgs gives the existing command the flags pzm parsed.
-func (declared declaredPzmVerb) legacyArgs(call pzm.Call) []string {
-	var flags []string
-	for _, flag := range declared.described.flags {
-		name := flag.name
-		switch flag.kind {
-		case pzmSwitch:
-			if call.On(name) {
-				flags = append(flags, "--"+name)
-			}
-		case pzmValue:
-			if call.Given(name) {
-				flags = append(flags, "--"+name,
-					call.Value(name))
-			}
-		case pzmList:
-			items := call.List(name)
-			if call.Given(name) && len(items) == count.Nothing {
-				flags = append(flags, "--"+name, "")
-			}
-			for _, item := range items {
-				flags = append(flags, "--"+name, item)
-			}
-		}
-	}
-	args := call.Args()
-	if declared.described.flagsAfter {
-		return append(args, flags...)
-	}
-	if foreignDashes[declared.described.name] {
-		for at, arg := range args {
-			if !strings.HasPrefix(arg, "-") {
-				continue
-			}
-			separated := append([]string{}, args[:at]...)
-			separated = append(separated, "--")
-			args = append(separated, args[at:]...)
-			break
-		}
-	}
-	return append(flags, args...)
-}
-
-var foreignDashes = map[string]bool{
-	"aslr": true, "cover": true, "fuzz": true, "leaks": true, "race": true,
+	return declared.described.do(here, cfg, call)
 }
 
 // gameTool declares game and every command to pzm.
@@ -378,9 +277,6 @@ func normalizePzmArgs(args []string) []string {
 	if len(out) > count.Nothing && out[count.First] == "who" {
 		out[count.First] = "history"
 	}
-	if len(out) > count.Nothing && out[count.First] == "--help-claude" {
-		out[count.First] = "help-claude"
-	}
 	for at, arg := range out {
 		if arg == "--" {
 			break
@@ -408,11 +304,15 @@ func runPzm(
 	in io.Reader,
 	out, errs io.Writer,
 ) int {
-	if len(args) == count.Nothing {
-		usage()
-		return exitUsage
-	}
 	invocation := pzmInvocation{dir: dir, whose: whose, home: home}
 	args = normalizePzmArgs(args)
 	return gameTool(invocation).RunWith(args, in, out, errs)
+}
+
+// valueOr is the flag's value, or fallback when it was not given.
+func valueOr(call pzm.Call, name, fallback string) string {
+	if call.Given(name) {
+		return call.Value(name)
+	}
+	return fallback
 }

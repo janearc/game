@@ -99,7 +99,7 @@ func TestPatchSaysWhatLandedAndWhatHadNone(t *testing.T) {
 	} {
 		work, cfg := patched(t, map[string]string{"m/01.patch": lands})
 		var out bytes.Buffer
-		if err := patchTo(work, cfg, each.args, &out); err != nil {
+		if err := verbTo(t, "patch", patchVerb, work, cfg, each.args, &out); err != nil {
 			t.Fatalf("%v: %v", each.args, err)
 		}
 		want := each.said + "patch n: no patches\n"
@@ -119,7 +119,7 @@ func TestPatchCountsTheMembersThatDidNotLand(t *testing.T) {
 	work, cfg := patched(t, map[string]string{"m/01.patch": lands,
 		"m/02.patch": misfires, "n/01.patch": misfires})
 	var out bytes.Buffer
-	err := patchTo(work, cfg, nil, &out)
+	err := verbTo(t, "patch", patchVerb, work, cfg, nil, &out)
 	if err == nil ||
 		err.Error() != "patch: 2 member's patches did not land" {
 		t.Errorf("both: %v", err)
@@ -133,7 +133,7 @@ func TestPatchCountsTheMembersThatDidNotLand(t *testing.T) {
 			t.Errorf("want %q in:\n%s", want, out.String())
 		}
 	}
-	err = patchTo(work, cfg, []string{"n"}, &bytes.Buffer{})
+	err = verbTo(t, "patch", patchVerb, work, cfg, []string{"n"}, &bytes.Buffer{})
 	if err == nil ||
 		err.Error() != "patch: 1 member's patches did not land" {
 		t.Errorf("one: %v", err)
@@ -146,11 +146,11 @@ func TestPatchIsLimitedToTheMembersNamed(t *testing.T) {
 	t.Parallel()
 	work, cfg := patched(t, map[string]string{"m/01.patch": lands})
 	var out bytes.Buffer
-	if err := patchTo(work, cfg, []string{"n"}, &out); err != nil ||
+	if err := verbTo(t, "patch", patchVerb, work, cfg, []string{"n"}, &out); err != nil ||
 		out.String() != "patch n: no patches\n" {
 		t.Errorf("%v, said %q", err, out.String())
 	}
-	err := patchTo(work, cfg, []string{"zzz"}, &bytes.Buffer{})
+	err := verbTo(t, "patch", patchVerb, work, cfg, []string{"zzz"}, &bytes.Buffer{})
 	if err == nil ||
 		err.Error() != "patch: zzz is not a member of this stack" {
 		t.Errorf("a stranger: %v", err)
@@ -161,11 +161,11 @@ func TestPatchIsLimitedToTheMembersNamed(t *testing.T) {
 func TestPatchRefusesWhatItCannotStartOn(t *testing.T) {
 	t.Parallel()
 	work, cfg := patched(t, nil)
-	err := patchTo(work, blankConfig(), nil, &bytes.Buffer{})
+	err := verbTo(t, "patch", patchVerb, work, blankConfig(), nil, &bytes.Buffer{})
 	if err == nil || !strings.HasPrefix(err.Error(), "no stack described") {
 		t.Errorf("no stack: %v", err)
 	}
-	err = patchTo(work, cfg, []string{"--from", "x"}, &bytes.Buffer{})
+	err = verbTo(t, "patch", patchVerb, work, cfg, []string{"--from", "x"}, &bytes.Buffer{})
 	if err == nil || err.Error() != `--from is road or dist, not "x"` {
 		t.Errorf("--from x: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestPatchSaysWhyAMemberCouldNotBeHad(t *testing.T) {
 		spoil(t, work, &lines)
 		cfg := lines.load(t)
 		var out bytes.Buffer
-		err := patchTo(work, cfg, nil, &out)
+		err := verbTo(t, "patch", patchVerb, work, cfg, nil, &out)
 		if err == nil ||
 			err.Error() != "patch: 1 member's patches did not land" ||
 			!strings.Contains(out.String(), name) ||
@@ -240,7 +240,7 @@ func TestPatchClonesFresh(t *testing.T) {
 	work, cfg := patched(t, map[string]string{"m/01.patch": lands})
 	old := work.Path("bin", "patch", "m", "old")
 	write(t, old, "from before")
-	if err := patchTo(work, cfg, []string{"m"}, &bytes.Buffer{}); err != nil {
+	if err := verbTo(t, "patch", patchVerb, work, cfg, []string{"m"}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(old); err == nil {

@@ -271,7 +271,11 @@ type runCame struct {
 func sendRun(ctx context.Context, root string, opts mutants.Options,
 	back chan<- runCame) {
 	report, err := mutants.Run(ctx, root, opts)
-	back <- runCame{report: report, err: err}
+	var seen mutants.Report
+	if report != nil {
+		seen = *report
+	}
+	back <- runCame{report: seen, err: err}
 }
 
 // TestARunNeedsItsCallersClockQuietAndDisk: a run is given what tells the

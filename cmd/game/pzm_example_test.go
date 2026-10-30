@@ -25,18 +25,6 @@ func TestGameToolExamples(t *testing.T) {
 	}
 }
 
-func Example_gameTool_version() {
-	runPzmExample("version", "--help")
-	// Output:
-	// game version [ARGS]: says which commit this binary is
-}
-
-func Example_gameTool_helpclaude() {
-	runPzmExample("help-claude", "--help")
-	// Output:
-	// game help-claude [ARGS]: prints the agent help
-}
-
 func Example_gameTool_check() {
 	runPzmExample("check", "--help")
 	// Output:
@@ -55,34 +43,10 @@ func Example_gameTool_build() {
 	// would run game build
 }
 
-func Example_gameTool_buildc() {
-	runPzmExample("build-c", "--dry-run")
-	// Output:
-	// would run game build-c
-}
-
-func Example_gameTool_buildxcode() {
-	runPzmExample("build-xcode", "--dry-run")
-	// Output:
-	// would run game build-xcode
-}
-
 func Example_gameTool_cover() {
 	runPzmExample("cover", "--dry-run")
 	// Output:
 	// would run game cover
-}
-
-func Example_gameTool_fuzz() {
-	runPzmExample("fuzz", "--dry-run")
-	// Output:
-	// would run game fuzz
-}
-
-func Example_gameTool_race() {
-	runPzmExample("race", "--dry-run")
-	// Output:
-	// would run game race
 }
 
 func Example_gameTool_aslr() {
@@ -100,7 +64,7 @@ func Example_gameTool_leaks() {
 func Example_gameTool_harden() {
 	runPzmExample("harden", "--help")
 	// Output:
-	// game harden [ARGS]: audits source, binaries and modules
+	// game harden [ARGS]: audits Go source and modules
 }
 
 func Example_gameTool_verify() {

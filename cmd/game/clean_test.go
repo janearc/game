@@ -42,7 +42,7 @@ func TestCleanLeavesTrackedBinFiles(t *testing.T) {
 	if err := os.WriteFile(built, []byte("binary"), openScript); err != nil {
 		t.Fatal(err)
 	}
-	if err := clean(work, blankConfig(), false); err != nil {
+	if err := clean(work, blankConfig(), false, run, quiet); err != nil {
 		t.Fatalf("clean: %v", err)
 	}
 	if _, err := os.Stat(kept); err != nil {

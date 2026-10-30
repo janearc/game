@@ -10,7 +10,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -59,10 +58,9 @@ const (
 // noMode is a mode with no bits set.
 var noMode int64
 
-// The three things the native rules say. raised: a call gives the
-// process a user or group it was not started with. loose: a mode lets
-// someone other than the owner write. escalates: a command runs as
-// another user.
+// The three things the rule says. raised: a call gives the process a user
+// or group it was not started with. loose: a mode lets someone other than
+// the owner write. escalates: a command runs as another user.
 const (
 	raised    = " gives the process privileges it was not started with"
 	loose     = "lets someone other than the owner write"
@@ -74,9 +72,8 @@ func hardened(rel string, at int, text string) Finding {
 	return Finding{rel, at, "harden", text, false}
 }
 
-// Hardened runs the harden rule alone over the files dir tracks or
-// holds. Those are go and C and Objective-C and Swift. It gives its
-// findings and asks nothing else.
+// Hardened runs the harden rule alone over the go files dir tracks or
+// holds. It gives its findings and asks nothing else.
 func Hardened(dir string) ([]Finding, error) {
 	files, err := tracked(dir)
 	if err != nil {
@@ -87,19 +84,10 @@ func Hardened(dir string) ([]Finding, error) {
 	}
 	var out []Finding
 	for _, rel := range files {
-		if testy(rel) {
+		if testy(rel) || !strings.HasSuffix(rel, ".go") {
 			continue
 		}
-		var found []Finding
-		var err error
-		switch {
-		case strings.HasSuffix(rel, ".go"):
-			found, err = hardenFile(filepath.Join(dir, rel), rel)
-		case nativeSource(rel):
-			found, err = hardenSource(filepath.Join(dir, rel), rel)
-		default:
-			continue
-		}
+		found, err := hardenFile(filepath.Join(dir, rel), rel)
 		if err != nil {
 			built := runtime.Version()
 			return nil, toolchain.Explain(dir, built, err)
@@ -107,16 +95,6 @@ func Hardened(dir string) ([]Finding, error) {
 		out = append(out, found...)
 	}
 	return out, nil
-}
-
-// nativeSource says whether harden reads rel as C, Objective-C or Swift.
-func nativeSource(rel string) bool {
-	switch {
-	case strings.HasSuffix(rel, ".c"), strings.HasSuffix(rel, ".m"),
-		strings.HasSuffix(rel, ".mm"), strings.HasSuffix(rel, ".swift"):
-		return true
-	}
-	return false
 }
 
 // hardenFile lints one go file for the harden rule, less the findings on
@@ -264,10 +242,9 @@ func strLit(args []ast.Expr, at int) (string, bool) {
 }
 
 // how strconv reads a number. The base comes from the prefix, 0o or 0x
-// or none. C writes a mode in octal. int64 fits a file mode.
+// or none. int64 fits a file mode.
 const (
 	prefixed = 0  // defined by strconv: the base from the prefix
-	octal    = 8  // defined: the base C writes a mode in
 	modeBits = 64 // defined by go: an int64, which a mode fits
 )
 
@@ -280,141 +257,4 @@ func intLit(expr ast.Expr) (int64, bool) {
 	}
 	held, err := strconv.ParseInt(lit.Value, prefixed, modeBits)
 	return held, err == nil
-}
-
-// The C, Objective-C and Swift side of harden is read line by line.
-// game bundles no parser for those languages. Each pattern requires a
-// call or a permission, so a word in passing is not a finding.
-
-// cPrivilege matches the calls that give a process a user or group it was
-// not started with.
-var cPrivilege = regexp.MustCompile(
-	`\b(?P<call>setuid|seteuid|setreuid|setresuid|setgid|setegid|` +
-		`setregid|setresgid|setgroups)\s*\(`,
-)
-
-// cChown matches the calls that move a file to another owner.
-var cChown = regexp.MustCompile(`\b(chown|fchown|lchown)\s*\(`)
-
-// cEscalate matches a shell-out that runs sudo or su.
-var cEscalate = regexp.MustCompile(
-	`\b(system|execlp?|execle|execvp?e?)\s*\([^)]*"` +
-		`((/usr)?/bin/)?(sudo|su)\b`,
-)
-
-// cSetid matches a chmod that sets the setuid or setgid bit.
-var cSetid = regexp.MustCompile(`\b(chmod|fchmod)\s*\([^)]*\b0o?[24][0-7]{3}\b`)
-
-// cFileMode matches a call that takes a file mode. Its octal literal is
-// then checked for a write looser than the owner's.
-var cFileMode = regexp.MustCompile(`\b(open|creat|mkdir|chmod|fchmod)\s*\(`)
-
-// cOctal is a permission written as octal, such as 0666 or 0o755.
-var cOctal = regexp.MustCompile(`\b0o?[0-7]{3,4}\b`)
-
-// cAnyRoot matches the constant that lets a stream accept any certificate.
-var cAnyRoot = regexp.MustCompile(`kCFStreamSSLAllowsAnyRoot`)
-
-// swiftPerm matches a Swift FileManager permission written loosely.
-var swiftPerm = regexp.MustCompile(
-	`\.posixPermissions\s*:\s*(?P<mode>0o[0-7]{3,4})`)
-
-// swiftEscalate matches a Swift Process that names sudo or su.
-var swiftEscalate = regexp.MustCompile(
-	`\b(launchPath|executableURL)\s*=\s*"[^"]*[/]?(sudo|su)"`,
-)
-
-// hardenSource lints one C, Objective-C or Swift file for the harden rule,
-// less the findings on a line that says noqa.
-func hardenSource(path, rel string) ([]Finding, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	swift := strings.HasSuffix(rel, ".swift")
-	lines := strings.Split(string(src), "\n")
-	var out []Finding
-	for index, line := range lines {
-		if notCode(line) {
-			continue
-		}
-		at := index + 1 // fencepost, defined: lines count from one
-		out = append(out, hardenCLine(rel, at, line)...)
-		if swift {
-			out = append(out, hardenSwiftLine(rel, at, line)...)
-		}
-	}
-	return exempt(src, out), nil
-}
-
-// notCode says whether a line is a comment or a directive, where nothing
-// a process does is written.
-func notCode(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return strings.HasPrefix(trimmed, "//") ||
-		strings.HasPrefix(trimmed, "/*") ||
-		strings.HasPrefix(trimmed, "*") ||
-		strings.HasPrefix(trimmed, "#")
-}
-
-// every is the count regexp has defined as all the matches there are.
-const every = -1
-
-// hardenCLine finds what one C or Objective-C line does that raises
-// privilege, trusts any root or opens a file too widely.
-func hardenCLine(rel string, at int, line string) []Finding {
-	switch {
-	case cPrivilege.MatchString(line):
-		call := cPrivilege.SubexpIndex("call")
-		match := cPrivilege.FindStringSubmatch(line)
-		return []Finding{hardened(rel, at, match[call]+raised)}
-	case cChown.MatchString(line):
-		return []Finding{hardened(rel, at,
-			"chown moves a file to another owner")}
-	case cEscalate.MatchString(line):
-		return []Finding{hardened(rel, at, escalates)}
-	case cSetid.MatchString(line):
-		return []Finding{hardened(rel, at,
-			"chmod sets the setuid or setgid bit")}
-	case cAnyRoot.MatchString(line):
-		return []Finding{hardened(rel, at,
-			"accepts any certificate any root signs")}
-	case cFileMode.MatchString(line):
-		for _, literal := range cOctal.FindAllString(line, every) {
-			if mode, ok := octalOf(literal); ok && looseMode(mode) {
-				return []Finding{hardened(rel, at, loose)}
-			}
-		}
-	}
-	return nil
-}
-
-// hardenSwiftLine finds what one Swift line does beyond the C calls: a
-// permission written loosely, or a Process that names sudo or su.
-func hardenSwiftLine(rel string, at int, line string) []Finding {
-	var out []Finding
-	if match := swiftPerm.FindStringSubmatch(line); match != nil {
-		literal := match[swiftPerm.SubexpIndex("mode")]
-		if mode, ok := octalOf(literal); ok && looseMode(mode) {
-			out = append(out, hardened(rel, at, loose))
-		}
-	}
-	if swiftEscalate.MatchString(line) {
-		out = append(out, hardened(rel, at, escalates))
-	}
-	return out
-}
-
-// octalOf is the integer an octal literal holds, or false when it is not
-// octal digits.
-func octalOf(literal string) (int64, bool) {
-	digits := strings.TrimPrefix(literal, "0o")
-	digits = strings.TrimPrefix(digits, "0")
-	mode, err := strconv.ParseInt(digits, octal, modeBits)
-	return mode, err == nil
-}
-
-// looseMode says a mode lets someone other than the owner write.
-func looseMode(mode int64) bool {
-	return mode&othersWrite != noMode
 }

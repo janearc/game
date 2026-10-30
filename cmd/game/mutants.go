@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +19,7 @@ import (
 	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/mutants"
 	"github.com/janearc/game/internal/repo"
+	"github.com/janearc/puzzlemouth/pzm"
 )
 
 // mutantArgs is what game mutants is told on its line.
@@ -29,70 +30,37 @@ type mutantArgs struct {
 	bench               bool
 }
 
-// mutantFlags reads game mutants' flags. a word that is not one is refused.
-func mutantFlags(args []string) (mutantArgs, error) {
-	var told mutantArgs
-	fs := flag.NewFlagSet("mutants", flag.ExitOnError)
-	told.whatToRun(fs)
-	told.howToRun(fs)
-	fs.Parse(args)
-	if word, _, said := verbWord(fs.Args()); said {
+// mutantsAsked reads game mutants' flags from the pzm call. a word that is
+// not a flag is refused.
+func mutantsAsked(call pzm.Call) (mutantArgs, error) {
+	told := mutantArgs{only: call.Value("only"), again: call.Value("again"),
+		report: call.Value("report"), workers: twoWorkers,
+		timeout: suiteTimeout, bench: call.On("bench")}
+	if word, _, said := verbWord(call.Args()); said {
 		return told, fmt.Errorf(
 			"mutants takes flags and nothing else; %q is not one",
 			word,
 		)
 	}
+	if call.Given("workers") {
+		workers, err := strconv.Atoi(call.Value("workers"))
+		if err != nil {
+			return told, fmt.Errorf(
+				"mutants: --workers wants a number, not %q",
+				call.Value("workers"))
+		}
+		told.workers = workers
+	}
+	if call.Given("timeout") {
+		timeout, err := time.ParseDuration(call.Value("timeout"))
+		if err != nil {
+			return told, fmt.Errorf(
+				"mutants: --timeout wants a duration, not %q",
+				call.Value("timeout"))
+		}
+		told.timeout = timeout
+	}
 	return told, nil
-}
-
-// whatToRun declares the flags that say which mutants run and where the
-// report goes.
-func (told *mutantArgs) whatToRun(fs *flag.FlagSet) {
-	fs.StringVar(
-		&told.only,
-		"only",
-		"",
-		"mutate only where file:function matches this regular "+
-			"expression",
-	)
-	fs.StringVar(
-		&told.again,
-		"again",
-		"",
-		"run only the mutants this earlier report says survived or "+
-			"timed out; the lines a run printed as it went will do",
-	)
-	fs.StringVar(
-		&told.report,
-		"report",
-		"",
-		"write every mutant and what became of it to this file",
-	)
-}
-
-// howToRun declares the flags that say how the mutants run.
-func (told *mutantArgs) howToRun(fs *flag.FlagSet) {
-	fs.IntVar(
-		&told.workers,
-		"workers",
-		twoWorkers,
-		"run this many mutants at once, each in a copy of the tree",
-	)
-	fs.DurationVar(
-		&told.timeout,
-		"timeout",
-		suiteTimeout,
-		"tests still running after this on a mutant have noticed it; "+
-			"at least twice the unchanged suite's time, or the "+
-			"run refuses to start and says what to give",
-	)
-	fs.BoolVar(
-		&told.bench,
-		"bench",
-		false,
-		"run each suite unchanged, say how long the whole run would "+
-			"take, and stop",
-	)
 }
 
 // the defaults a mutation run takes, as picked here: two mutants at
@@ -107,18 +75,8 @@ const (
 // mutate is game mutants. it runs every suite unchanged first, then each
 // mutant against its package's tests, and can be interrupted. it writes the
 // report where asked and says the verdict.
-func mutate(here repo.Repo, args []string) error {
-	return mutateBy(here, args, diskMiner{}, os.Stdout)
-}
-
-// mutateBy is mutate, running the mutants with run and saying what
-// became of them on out.
-func mutateBy(here repo.Repo, args []string, run miner,
-	out io.Writer) error {
-	told, err := mutantFlags(args)
-	if err != nil {
-		return err
-	}
+func mutate(here repo.Repo, told mutantArgs, call pzm.Call) error {
+	out := call.Out()
 	opts, err := mutantOptions(
 		told.only, told.again, told.workers, told.timeout,
 	)
@@ -147,16 +105,16 @@ func mutateBy(here repo.Repo, args []string, run miner,
 	// killed meanwhile the run has still left its report.
 	// what is written then is not written again.
 	tell := &settled{ctx: ctx, out: out, path: told.report}
-	found, err := run.Run(ctx, here.Dir(), opts, tell.settle,
-		decidedOn(out))
+	found, err := mutants.Run(ctx, here.Dir(),
+		opts.Settling(tell.settle).Deciding(decidedOn(out)))
 	stopped := errors.Is(err, context.Canceled)
 	if err != nil && !stopped {
 		return err
 	}
 	if told.bench {
-		return tellBench(out, found, told.workers, stopped)
+		return tellBench(out, *found, told.workers, stopped)
 	}
-	return tell.verdict(found, stopped)
+	return tell.verdict(*found, stopped)
 }
 
 // settled writes the report and tells the tally once, as the run settles.
@@ -171,7 +129,7 @@ type settled struct {
 
 // settle writes and tells what the run found, as the run settles. the run
 // is stopped when its context is done.
-func (tell *settled) settle(found findings) {
+func (tell *settled) settle(found mutants.Report) {
 	tell.done = true
 	tell.result = writeAndTell(tell.out, found, tell.path,
 		tell.ctx.Err() != nil)
@@ -180,7 +138,7 @@ func (tell *settled) settle(found findings) {
 // verdict is the error of the run. it is what settling gave. when the
 // miner never settled it is what writing and telling what it returned
 // gives.
-func (tell *settled) verdict(found findings, stopped bool) error {
+func (tell *settled) verdict(found mutants.Report, stopped bool) error {
 	if tell.done {
 		return tell.result
 	}
@@ -189,7 +147,7 @@ func (tell *settled) verdict(found findings, stopped bool) error {
 
 // writeAndTell writes the report where asked and then tells the tally.
 // its error is the exit code, as tellMutants gives it.
-func writeAndTell(out io.Writer, found findings, path string,
+func writeAndTell(out io.Writer, found mutants.Report, path string,
 	stopped bool) error {
 	if path != "" {
 		text := reportText(found, stopped)
@@ -204,7 +162,7 @@ func writeAndTell(out io.Writer, found findings, path string,
 // reportText is the report as the file holds it, one mutant a line.
 // the report of a stopped run says so on a line of its own before the
 // mutants. it says how many were not reached and of how many.
-func reportText(found findings, stopped bool) string {
+func reportText(found mutants.Report, stopped bool) string {
 	text := strings.Join(found.Lines(), "\n") + "\n"
 	if !stopped {
 		return text
@@ -212,7 +170,7 @@ func reportText(found findings, stopped bool) string {
 	outcomes := found.Outcomes()
 	var unreached int
 	for _, made := range outcomes {
-		if made.state == "stopped" {
+		if made.State() == "stopped" {
 			unreached++
 		}
 	}
@@ -326,9 +284,9 @@ func chosenPlace() (string, error) {
 // suite could not be run. it fails for a stale line. it fails when the
 // run was interrupted, and the figures are then partial.
 func tellBench(
-	out io.Writer, found findings, workers int, stopped bool,
+	out io.Writer, found mutants.Report, workers int, stopped bool,
 ) error {
-	suites := append([]suiteCost{}, found.Suites()...)
+	suites := slices.Clone(found.Suites())
 	slices.SortFunc(suites, dearestFirst)
 	fmt.Fprintln(
 		out,
@@ -338,10 +296,10 @@ func tellBench(
 		fmt.Fprintf(
 			out,
 			"  %-28s %5d mutants  suite %7s  at most %s alone\n",
-			suite.dir,
-			suite.mutants,
-			mutants.About(suite.took),
-			mutants.About(suite.alone),
+			suite.Dir(),
+			suite.Mutants(),
+			mutants.About(suite.Took()),
+			mutants.About(suite.Alone()),
 		)
 	}
 	broken := found.Broken()
@@ -379,7 +337,7 @@ func tellStale(out io.Writer, stale []string) {
 // timed out. then it writes the tally. its error is the exit code. any of
 // those sets it, and so do a stale line and a stopped run.
 func tellMutants(
-	out io.Writer, found findings, stopped bool,
+	out io.Writer, found mutants.Report, stopped bool,
 ) error {
 	for _, pkg := range found.Untested() {
 		fmt.Fprintf(out, "untested: %s has source and no tests\n", pkg)
@@ -393,20 +351,21 @@ func tellMutants(
 	outcomes := found.Outcomes()
 	counts := map[string]int{}
 	for _, made := range outcomes {
-		counts[made.state]++
-		if made.state == "broken" {
+		counts[made.State()]++
+		if made.State() == "broken" {
 			fmt.Fprintf(out, "broken: %s: %s\n",
-				made.name, made.failing)
+				made.Mutant().Name(), made.Failing())
 		}
 	}
 	for _, made := range outcomes {
-		if made.state == "survived" {
-			fmt.Fprintf(out, "survived: %s\n", made.at)
+		if made.State() == "survived" {
+			fmt.Fprintf(out, "survived: %s\n", where(made.Mutant()))
 		}
 	}
 	for _, made := range outcomes {
-		if made.state == "timed out" {
-			fmt.Fprintf(out, "timed out: %s\n", made.at)
+		if made.State() == "timed out" {
+			fmt.Fprintf(out, "timed out: %s\n",
+				where(made.Mutant()))
 		}
 	}
 	ran := len(outcomes) - counts["stopped"]
@@ -489,8 +448,8 @@ func toStderr(said string) {
 
 // dearestFirst orders suites by what their mutants would cost alone,
 // the dearest first, as slices.SortFunc asks.
-func dearestFirst(one, other suiteCost) int {
-	return cmp.Compare(other.alone, one.alone)
+func dearestFirst(one, other mutants.Suite) int {
+	return cmp.Compare(other.Alone(), one.Alone())
 }
 
 // decidedOn says each decided survivor on out as it comes.

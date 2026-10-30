@@ -187,6 +187,12 @@ type Outcome struct {
 	failing string
 }
 
+// NewOutcome is what became of this mutant: its state, and the tests
+// that failed on it or why they could not run.
+func NewOutcome(mutant Mutant, state, failing string) Outcome {
+	return Outcome{mutant: mutant, state: state, failing: failing}
+}
+
 // Mutant is the mutant the outcome is of.
 func (made Outcome) Mutant() Mutant { return made.mutant }
 
@@ -204,6 +210,12 @@ type Suite struct {
 	dir     string
 	took    time.Duration
 	mutants int
+}
+
+// NewSuite is the unchanged suite of the package in dir, which took that
+// long and has that many mutants waiting on it.
+func NewSuite(dir string, took time.Duration, mutants int) Suite {
+	return Suite{dir: dir, took: took, mutants: mutants}
 }
 
 // Dir is the package's directory from the root.
@@ -234,6 +246,15 @@ type Report struct {
 	// suites is each sound package's unchanged suite, timed, with the
 	// count of its mutants.
 	suites []Suite
+}
+
+// NewReport is a report of these outcomes, the packages with source and
+// no tests, the packages whose tests could not be run, the stale lines of
+// .mutants and the suites.
+func NewReport(outcomes []Outcome, untested, broken, stale []string,
+	suites []Suite) Report {
+	return Report{outcomes: outcomes, untested: untested, broken: broken,
+		stale: stale, suites: suites}
 }
 
 // Outcomes is what became of each mutant, in the run's order.
@@ -403,28 +424,28 @@ var noDuration time.Duration
 // want runs against its package's tests. survivors that .mutants names
 // are marked equivalent, and names it has that the source does not are
 // stale.
-func Run(ctx context.Context, root string, opts Options) (Report, error) {
+func Run(ctx context.Context, root string, opts Options) (*Report, error) {
 	if opts.now == nil || opts.files == nil || opts.quietFor <= noDuration {
-		return Report{}, errors.New("a run needs Nowed, QuietAfter " +
+		return nil, errors.New("a run needs Nowed, QuietAfter " +
 			"and Writing: the caller owns the clock and the disk")
 	}
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return Report{}, err
+		return nil, err
 	}
 	equivalents, err := equivalents(root)
 	if err != nil {
-		return Report{}, err
+		return nil, err
 	}
 	pkgs, broken, err := packages(root)
 	if err != nil {
-		return Report{}, err
+		return nil, err
 	}
 	all, untested, err := gather(root, pkgs, opts)
 	if err != nil {
-		return Report{}, err
+		return nil, err
 	}
-	report := Report{broken: broken, untested: untested}
+	report := NewReport(nil, untested, broken, nil, nil)
 	tellPlanned(opts, all)
 	done := runAll(ctx, root, all, opts)
 	// the copies go when Run returns, after the report has been handed over
@@ -432,7 +453,7 @@ func Run(ctx context.Context, root string, opts Options) (Report, error) {
 	report.outcomes, report.suites = done.outcomes, done.suites
 	report.broken = append(report.broken, done.broken...)
 	if done.refused != nil {
-		return report, done.refused
+		return &report, done.refused
 	}
 	for at := range report.outcomes {
 		made := &report.outcomes[at]
@@ -447,7 +468,7 @@ func Run(ctx context.Context, root string, opts Options) (Report, error) {
 	if !opts.bench {
 		opts.settle(report)
 	}
-	return report, ctx.Err()
+	return &report, ctx.Err()
 }
 
 // stale finds names in equivalents not used by any mutant.
@@ -784,7 +805,7 @@ func tooShort(suites []Suite, timeout time.Duration) error {
 func unreached(all []work) []Outcome {
 	var out []Outcome
 	for _, job := range all {
-		out = append(out, Outcome{mutant: job.mutant, state: "stopped"})
+		out = append(out, NewOutcome(job.mutant, "stopped", ""))
 	}
 	return out
 }
@@ -845,10 +866,10 @@ func runKept(
 ) []Outcome {
 	outcomes := make([]Outcome, len(kept), len(kept)+len(rest))
 	for i, job := range kept {
-		outcomes[i] = Outcome{mutant: job.mutant, state: "stopped"}
+		outcomes[i] = NewOutcome(job.mutant, "stopped", "")
 	}
 	for _, job := range rest {
-		unreached := Outcome{mutant: job.mutant, state: "stopped"}
+		unreached := NewOutcome(job.mutant, "stopped", "")
 		outcomes = append(outcomes, unreached)
 	}
 	running := &running{
@@ -1062,7 +1083,7 @@ func (judge *judging) suite(in pkg) bool {
 		return false
 	}
 	took := judge.opts.now().Sub(began)
-	judge.suites = append(judge.suites, Suite{dir: in.dir, took: took})
+	judge.suites = append(judge.suites, NewSuite(in.dir, took, 0))
 	judge.opts.say("unchanged: %s passes, %s", in.dir, About(took))
 	return false
 }
@@ -1109,7 +1130,7 @@ func runOne(
 	timeout time.Duration,
 	files Files,
 ) Outcome {
-	out := Outcome{mutant: job.mutant, state: "broken"}
+	out := NewOutcome(job.mutant, "broken", "")
 	path := filepath.Join(tree, job.mutant.file)
 	original, err := os.ReadFile(path)
 	if err != nil {
@@ -1164,7 +1185,7 @@ func test(
 		"TMPDIR="+scratchOf(tree))
 	cmd.WaitDelay = waitDelay
 	// go leads a group of its own, and stopping the run stops the group
-	procgroup.Leading(cmd, procgroup.System())
+	procgroup.Leading(cmd)
 	output, err := cmd.CombinedOutput()
 	return output, err, bound.Err() != nil
 }

@@ -112,14 +112,28 @@ func commitFile(t *testing.T, work repo.Repo, name, body,
 	}
 }
 
-// made is a stamp as game build gives one, so a release will start:
-// releasePrepare, releasePush and releaseStack refuse a game that cannot
-// say which commit it came from. the test claims none; it only needs the
-// gate open to reach the code behind it.
-var made = stamp{commit: "test", at: "2026-10-15T00:00:00Z"}
+// testCommit and testBuilt are the commit and time as game build gives
+// them, so a release will start: releasePrepare, releasePush and
+// releaseStack refuse a game that cannot say which commit it came from.
+// the test claims none; it only needs the gate open to reach the code
+// behind it.
+const (
+	testCommit = "test"
+	testBuilt  = "2026-10-15T00:00:00Z"
+)
 
-// unstamped is a game built by go rather than by game.
-var unstamped = stamp{commit: "dev"}
+// devCommit is the commit of a game built by go rather than by game,
+// which has no time to go with it.
+const devCommit = "dev"
+
+// stampOf is the commit and time a release is given: a game built by
+// game, or when dev is set one built by go.
+func stampOf(dev bool) (commit, at string) {
+	if dev {
+		return devCommit, ""
+	}
+	return testCommit, testBuilt
+}
 
 // withModule gives the clone a go.mod and a miami command, committed.
 func withModule(t *testing.T, one repo.Repo) {
@@ -164,11 +178,11 @@ func TestStickyThenBuildFastForwards(t *testing.T) {
 	withModule(t, one)
 	// no push typed here: stick pushes the claim itself, and the
 	// partner's sticky below only works if it did.
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
 
-	if err := doSticky(two, cfg); err != nil {
+	if err := follow(two, cfg, quiet); err != nil {
 		t.Fatalf("sticky: %v", err)
 	}
 	if _, ok, err := sticky.Stuck(two.Dir()); err != nil || !ok {
@@ -183,7 +197,7 @@ func TestStickyThenBuildFastForwards(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 
-	if err := buildBinaries(two, cfg); err != nil {
+	if err := buildBinaries(two, cfg, madeBy(two), run, quiet, false); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if _, err := os.Stat(two.Path("bin", "miami")); err != nil {
@@ -203,21 +217,21 @@ func TestReleaseAfterUnstickCarriesNoTrace(t *testing.T) {
 	one, _, road, dist := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, dist)
 
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
 	commitFile(t, one, "feature.txt", "a feature\n", "a feature")
-	if err := doUnstick(one, cfg); err != nil {
+	if err := unstick(one, cfg, quiet); err != nil {
 		t.Fatalf("unstick: %v", err)
 	}
 	if _, ok, _ := sticky.Stuck(one.Dir()); ok {
 		t.Fatal(".sticky is still in the working tree after unstick")
 	}
 
-	if err := releasePrepare(one, cfg, "v1", false, io.Discard, made); err != nil {
+	if err := releasePrepare(one, cfg, "v1", false, io.Discard, testCommit, testBuilt); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	if err := releasePush(one, cfg, "v1", false, io.Discard, made); err != nil {
+	if err := releasePush(one, cfg, "v1", false, io.Discard, testCommit, testBuilt); err != nil {
 		t.Fatalf("release push: %v", err)
 	}
 	main, err := one.RemoteMain(dist)
@@ -245,7 +259,7 @@ func TestReleaseRefusesWhileStuck(t *testing.T) {
 	if _, err := sticky.Stick(one, road, "partner"); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
-	err := releasePrepare(one, cfg, "v1", false, io.Discard, made)
+	err := releasePrepare(one, cfg, "v1", false, io.Discard, testCommit, testBuilt)
 	if err == nil || !strings.Contains(err.Error(), "unstick first") {
 		t.Fatalf("want the unstick refusal, got %v", err)
 	}
@@ -260,7 +274,7 @@ func TestReleasePushRefusesWhileStuck(t *testing.T) {
 	one, _, road, dist := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, dist)
 
-	if err := releasePrepare(one, cfg, "v1", false, io.Discard, made); err != nil {
+	if err := releasePrepare(one, cfg, "v1", false, io.Discard, testCommit, testBuilt); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	// stuck by a name that is not this project's release author, so
@@ -272,7 +286,7 @@ func TestReleasePushRefusesWhileStuck(t *testing.T) {
 	if _, err := one.Git("push", road, "work"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
-	err := releasePush(one, cfg, "v1", false, io.Discard, made)
+	err := releasePush(one, cfg, "v1", false, io.Discard, testCommit, testBuilt)
 	if err == nil || !strings.Contains(err.Error(), "unstick first") {
 		t.Fatalf("want the unstick refusal, got %v", err)
 	}
@@ -281,13 +295,13 @@ func TestReleasePushRefusesWhileStuck(t *testing.T) {
 	}
 
 	// unstick, prepare again from the clean tree, and it goes out.
-	if err := doUnstick(one, cfg); err != nil {
+	if err := unstick(one, cfg, quiet); err != nil {
 		t.Fatalf("unstick: %v", err)
 	}
-	if err := releasePrepare(one, cfg, "v1", false, io.Discard, made); err != nil {
+	if err := releasePrepare(one, cfg, "v1", false, io.Discard, testCommit, testBuilt); err != nil {
 		t.Fatalf("release after unstick: %v", err)
 	}
-	if err := releasePush(one, cfg, "v1", false, io.Discard, made); err != nil {
+	if err := releasePush(one, cfg, "v1", false, io.Discard, testCommit, testBuilt); err != nil {
 		t.Fatalf("release push after unstick: %v", err)
 	}
 	if main, _ := one.RemoteMain(dist); main == "" {
@@ -303,7 +317,7 @@ func TestReleasePushBehindTheSticker(t *testing.T) {
 	one, two, road, dist := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, dist)
 
-	if err := releasePrepare(one, cfg, "v1", false, io.Discard, made); err != nil {
+	if err := releasePrepare(one, cfg, "v1", false, io.Discard, testCommit, testBuilt); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if _, err := sticky.Stick(two, road, "partner"); err != nil {
@@ -312,14 +326,14 @@ func TestReleasePushBehindTheSticker(t *testing.T) {
 	if _, err := two.Git("push", road, "work"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
-	if err := doSticky(one, cfg); err != nil {
+	if err := follow(one, cfg, quiet); err != nil {
 		t.Fatalf("sticky: %v", err)
 	}
 	commitFile(t, two, "more.txt", "more work\n", "more work")
 	if _, err := two.Git("push", road, "work"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
-	err := releasePush(one, cfg, "v1", false, io.Discard, made)
+	err := releasePush(one, cfg, "v1", false, io.Discard, testCommit, testBuilt)
 	if err == nil ||
 		!strings.Contains(err.Error(), "pull or build first") {
 		t.Fatalf("want the merge refusal, got %v", err)
@@ -352,7 +366,7 @@ func TestStickAndUnstickPushTheClaim(t *testing.T) {
 	one, two, road, _ := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, "")
 
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
 	holder, held := claimOnRoad(t, two, road)
@@ -361,7 +375,7 @@ func TestStickAndUnstickPushTheClaim(t *testing.T) {
 			holder, held)
 	}
 
-	if err := doUnstick(one, cfg); err != nil {
+	if err := unstick(one, cfg, quiet); err != nil {
 		t.Fatalf("unstick: %v", err)
 	}
 	if holder, held := claimOnRoad(t, two, road); held {
@@ -382,7 +396,7 @@ func TestStickCatchesUpToTheRoadFirst(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatalf("stick behind the road: %v", err)
 	}
 	if _, err := os.Stat(one.Path("theirs.txt")); err != nil {
@@ -404,10 +418,10 @@ func TestUnstickBehindTheStickerRefusesFirst(t *testing.T) {
 	t.Parallel()
 	one, two, road, _ := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, "")
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
-	if err := doSticky(two, cfg); err != nil {
+	if err := follow(two, cfg, quiet); err != nil {
 		t.Fatalf("sticky: %v", err)
 	}
 	commitFile(t, one, "more.txt", "more\n", "more from the sticker")
@@ -416,7 +430,7 @@ func TestUnstickBehindTheStickerRefusesFirst(t *testing.T) {
 	}
 
 	before, _ := two.Git("rev-parse", "HEAD")
-	err := doUnstick(two, cfg)
+	err := unstick(two, cfg, quiet)
 	if err == nil {
 		t.Fatal("unstuck a tree behind the sticker")
 	}
@@ -430,10 +444,10 @@ func TestUnstickBehindTheStickerRefusesFirst(t *testing.T) {
 		t.Error("a refused unstick removed the claim")
 	}
 
-	if err := syncBuild(two, cfg); err != nil {
+	if err := syncBuild(two, cfg, io.Discard); err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if err := doUnstick(two, cfg); err != nil {
+	if err := unstick(two, cfg, quiet); err != nil {
 		t.Fatalf("unstick after catching up: %v", err)
 	}
 	if holder, held := claimOnRoad(t, one, road); held {

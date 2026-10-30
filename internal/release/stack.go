@@ -84,39 +84,60 @@ func (made Stacked) Patched(member string) int { return made.patched[member] }
 // Stack builds a stack from members. it fetches each member, lays them
 // beside this repo, writes a go.work, and keeps the commit at ref(tag).
 // any error stops it before the ref is written.
-func Stack(here repo.Repo, asked Options, members []Member) (Stacked, error) {
+func Stack(here repo.Repo, asked Options, members []Member) (*Stacked, error) {
 	var out Stacked
 	if err := stackable(asked, members); err != nil {
-		return out, err
+		return nil, err
 	}
 	if err := tidy(here); err != nil {
-		return out, err
+		return nil, err
 	}
 	scratch, err := here.Scratch("HEAD", asked.omit)
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 	defer scratch.Close()
 	env := scratch.Env()
 	lay := newLayout(asked)
 	for _, member := range members {
 		if err := lay.add(here, env, member); err != nil {
-			return out, err
+			return nil, err
 		}
 	}
 	out.members, out.games = lay.members, lay.games
 	out.modules = lay.work
 	out.patched = lay.patched
 	if err := written(here, env, lay, &out); err != nil {
-		return out, err
+		return nil, err
 	}
 	if err := commit(here, asked, &out); err != nil {
-		return out, err
+		return nil, err
 	}
 	if err := refuse(here, asked, lay, &out); err != nil {
-		return out, err
+		return nil, err
 	}
-	return out, keep(here, asked, out)
+	if err := keep(here, asked, out); err != nil {
+		return nil, err
+	}
+	stacked := NewStacked(out.made.commit, out.made.skipped, out.members,
+		out.modules, out.work, out.games, out.patched)
+	return &stacked, nil
+}
+
+// NewStacked is a stack whose commit is commit, which is the one dist
+// already had when skipped.
+//
+// members are the names in the order they were laid out, modules the
+// directories of their go modules and work the go.work written. games is
+// each member's own .game, and patched how many of the stack's own
+// patches were laid on each member.
+func NewStacked(commit string, skipped bool, members, modules []string,
+	work string, games map[string]string, patched map[string]int) Stacked {
+	return Stacked{
+		made:    Result{commit: commit, skipped: skipped},
+		members: members, modules: modules, work: work, games: games,
+		patched: patched,
+	}
 }
 
 // written puts the go.work into the index when the members make one. It
@@ -148,7 +169,7 @@ func written(
 // ref the stack waits at.
 func keep(here repo.Repo, asked Options, out Stacked) error {
 	if asked.qualifier != nil {
-		if err := asked.qualifier.Qualify(out); err != nil {
+		if err := asked.qualifier(out); err != nil {
 			return err
 		}
 	}
@@ -356,7 +377,7 @@ func (lay *layout) takeGame(
 func (lay *layout) takeModules(
 	here repo.Repo, tree, name string, theirs bool,
 ) error {
-	places, err := modules(here, tree)
+	places, err := modulesIn(here, tree)
 	if err != nil {
 		return fmt.Errorf("%s: its modules: %v", name, err)
 	}
@@ -589,9 +610,9 @@ func required(mod string) map[string]string {
 	return out
 }
 
-// modules lists the directories in a tree that hold a go.mod, as prefixes
+// modulesIn lists the directories in a tree that hold a go.mod, as prefixes
 // ending in a slash. the root is the empty string.
-func modules(here repo.Repo, tree string) ([]string, error) {
+func modulesIn(here repo.Repo, tree string) ([]string, error) {
 	out, err := here.Git("ls-tree", "-r", "--name-only", tree)
 	if err != nil {
 		return nil, err
@@ -616,11 +637,4 @@ func directive(mod string) string {
 		}
 	}
 	return ""
-}
-
-// Qualifier is asked about a stack once it is assembled and swept. It is
-// asked before the ref is written. Any error from it refuses the stack.
-// The ref an earlier stack left at the same tag stays as it was.
-type Qualifier interface {
-	Qualify(assembled Stacked) error
 }

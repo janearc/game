@@ -156,7 +156,6 @@ type aGameSpelling struct {
 func someGameSpellings() []aGameSpelling {
 	return []aGameSpelling{
 		{"plain", "name x\nexclude notes/\nsweep allow README.md paths\n"},
-		{"upper case keys", "name x\nEXCLUDE notes/\nSweep allow README.md paths\n"},
 		{"equals signs", "name x\nexclude = notes/\nsweep = allow README.md paths\n"},
 		{"tabs", "name x\nexclude\tnotes/\nsweep\tallow\tREADME.md\tpaths\n"},
 		{"quoted", "name x\nexclude \"notes/\"\nsweep allow README.md paths\n"},

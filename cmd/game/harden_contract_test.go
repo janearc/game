@@ -25,7 +25,7 @@ func TestHardenRefusesUnreadableModuleMetadata(t *testing.T) {
 		t.Fatalf("analyzers ran after metadata failed: %v", stand.said)
 	}
 	var out bytes.Buffer
-	if err := hardenAllBy(dir, stand.run, &out); err == nil {
+	if err := hardenAll(dir, stand.run, &out); err == nil {
 		t.Fatal("harden reported clean after module metadata failed")
 	}
 	if out.Len() != count.Nothing {
@@ -37,7 +37,7 @@ func TestHardenRefusesMissingSourceDirectory(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "missing")
 	var out bytes.Buffer
-	if err := hardenAllBy(dir, (&asked{}).run, &out); err == nil {
+	if err := hardenAll(dir, (&asked{}).run, &out); err == nil {
 		t.Fatal("missing source directory was reported clean")
 	}
 	if out.Len() != count.Nothing {
@@ -45,17 +45,17 @@ func TestHardenRefusesMissingSourceDirectory(t *testing.T) {
 	}
 }
 
-func TestHardenVerbRejectsUnknownLanguage(t *testing.T) {
+func TestHardenVerbRejectsAWord(t *testing.T) {
 	t.Parallel()
 	work := repoAt(t.TempDir())
-	err := hardenVerb(work, blankConfig(), []string{"unknown"})
-	if !errors.Is(err, errHardenLanguage) {
-		t.Fatalf("unknown hardening language: %v", err)
+	err := viaPzm(t, "harden", hardenVerb, work, blankConfig(), []string{"unknown"})
+	if err == nil || errors.Is(err, errPzmRefused) {
+		t.Fatalf("a word to harden: %v", err)
 	}
 }
 
 func TestHardenAnalyzerFailuresStayFindings(t *testing.T) {
-	standTools(t, "gosec", "govulncheck", "semgrep")
+	standTools(t, "gosec", "govulncheck")
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "go.mod"), "module example.invalid/check\n")
 	stand := &asked{fail: "gosec"}
@@ -69,12 +69,6 @@ func TestHardenAnalyzerFailuresStayFindings(t *testing.T) {
 	if len(found) != count.One ||
 		!strings.Contains(found[count.First].Text(), "govulncheck failed: no:") {
 		t.Fatalf("govulncheck failure was lost: %v", found)
-	}
-	stand = &asked{fail: "semgrep"}
-	found = semgrepFindings(dir, stand.run)
-	if len(found) != count.One ||
-		!strings.Contains(found[count.First].Text(), "semgrep failed: no:") {
-		t.Fatalf("semgrep failure was lost: %v", found)
 	}
 }
 
@@ -90,17 +84,5 @@ func TestHardenRelativePathsKeepOutsideAndRelativeNames(t *testing.T) {
 	}
 	if got := relTo("relative-root", outside); got != outside {
 		t.Fatalf("incompatible paths changed to %q", got)
-	}
-}
-
-func TestSemgrepUsesRuleAndUnknownSeverityWhenAbsent(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	body := `{"results":[{"check_id":"rule.name","path":"` +
-		filepath.Join(dir, "source.go") + `","start":{"line":1},"extra":{}}]}`
-	found := semgrepIssues(body, dir)
-	if len(found) != count.One ||
-		found[count.First].Text() != "rule.name rule.name (unknown severity)" {
-		t.Fatalf("incomplete report lost rule identity: %v", found)
 	}
 }

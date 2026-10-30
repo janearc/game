@@ -54,19 +54,6 @@ func missingChild(dir string) *exec.Cmd {
 // noRoad is a remote that cannot say where a member lives.
 func noRoad(string) (string, error) { return "", errors.New("no road") }
 
-// offering is a fixer that offers one branch, or an error with it.
-type offering struct {
-	branch string
-	err    error
-}
-
-// Fix offers the branch it holds.
-func (offer offering) Fix(
-	context.Context, stack.Member, string, string, string,
-) (string, error) {
-	return offer.branch, offer.err
-}
-
 // made is stack.Build's options, policed.
 func made(
 	members []stack.Member, work string, child func(dir string) *exec.Cmd,
@@ -75,10 +62,9 @@ func made(
 }
 
 // policed is the options given what a build wants of its caller: the
-// clock, the dice and the fixes. nothing waits, a wait is the most it may
-// be, and no fix is offered.
+// clock and the dice. nothing waits, and a wait is the most it may be.
 func policed(options stack.Options) stack.Options {
-	return options.Sleeping(noWait).Jittered(largest).Fixing(stack.GivingUp())
+	return options.Sleeping(noWait).Jittered(largest)
 }
 
 // cell is one member's row as the table a person reads says it.
@@ -160,18 +146,15 @@ func ranOne(t *testing.T, options stack.Options) cell {
 	return tableOf(t, rows)["m"]
 }
 
-// TestRunNeedsItsCallersClockDiceAndFixes: a build is given what waits,
-// what draws a wait and what offers a fix, and is refused without any of
-// the three; with all three it runs.
-func TestRunNeedsItsCallersClockDiceAndFixes(t *testing.T) {
+// TestRunNeedsItsCallersClockAndDice: a build is given what waits and
+// what draws a wait, and is refused without either; with both it runs.
+func TestRunNeedsItsCallersClockAndDice(t *testing.T) {
 	t.Parallel()
 	work := t.TempDir()
 	bare := stack.Build(nil, work, nil)
-	fixing := stack.GivingUp()
 	for name, options := range map[string]stack.Options{
-		"no sleep":  bare.Jittered(largest).Fixing(fixing),
-		"no jitter": bare.Sleeping(noWait).Fixing(fixing),
-		"no fixer":  bare.Sleeping(noWait).Jittered(largest),
+		"no sleep":  bare.Jittered(largest),
+		"no jitter": bare.Sleeping(noWait),
 		"nothing":   bare,
 	} {
 		if _, err := runBefore(t, context.Background(), options); err == nil {
@@ -179,17 +162,7 @@ func TestRunNeedsItsCallersClockDiceAndFixes(t *testing.T) {
 		}
 	}
 	if _, err := runBefore(t, context.Background(), made(nil, work, nil)); err != nil {
-		t.Errorf("a build given all three: %v", err)
-	}
-}
-
-// TestGivingUpFixesNothing: the one fixer game ships offers no branch.
-func TestGivingUpFixesNothing(t *testing.T) {
-	t.Parallel()
-	branch, err := stack.GivingUp().Fix(context.Background(),
-		stack.Named("m", "v1"), "dir", "test", "no")
-	if branch != "" || err != nil {
-		t.Errorf("a fix of %q, %v", branch, err)
+		t.Errorf("a build given both: %v", err)
 	}
 }
 
@@ -435,19 +408,17 @@ func TestCloneTriesThenSaysWhy(t *testing.T) {
 	}
 }
 
-// TestTableSaysWhereAFailureWas: a failure names its step; a pass and a
-// fix do not.
+// TestTableSaysWhereAFailureWas: a failure names its step; a pass does
+// not.
 func TestTableSaysWhereAFailureWas(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	urls := reposFor(t, dir)
 	members := []stack.Member{
 		stack.Named("good", "v1"), stack.Named("bad", "v1"),
-		stack.Named("fixme", "v1"),
 	}
 	options := made(members, filepath.Join(dir, "work"), child).
 		From(urls.at).
-		Fixing(selective{}).
 		InParallel(len(members))
 	rows, err := runBefore(t, context.Background(), options)
 	if err != nil {
@@ -457,8 +428,7 @@ func TestTableSaysWhereAFailureWas(t *testing.T) {
 	stack.Table(&out, rows)
 	text := out.String()
 	if !strings.Contains(text, "failed at check") ||
-		strings.Contains(text, "ok at") ||
-		strings.Contains(text, "fixed on fix at") {
+		strings.Contains(text, "ok at") {
 		t.Errorf("table:\n%s", text)
 	}
 }
@@ -580,92 +550,6 @@ echo '{"step":"build","state":"ok","count":7}'`: {"ok", int(held(t, "lint-counte
 		if got := ranOne(t, one); got != want {
 			t.Errorf("%s:\n%+v, want %+v", script, got, want)
 		}
-	}
-}
-
-// recording is a fixer that notes what it is offered, and gives up.
-type recording struct {
-	mu    sync.Mutex
-	asked []string
-}
-
-// Fix notes the member, the directory's name, the step and the text.
-func (note *recording) Fix(
-	_ context.Context, member stack.Member, dir, step, text string,
-) (string, error) {
-	note.mu.Lock()
-	defer note.mu.Unlock()
-	facts := []string{member.Name(), filepath.Base(dir), step, text}
-	note.asked = append(note.asked, strings.Join(facts, "|"))
-	return "", nil
-}
-
-// TestMendOffersOnlyWhatItCanBuild: a fixer that gives up, one whose
-// offer comes with an error, and an offer with no remote to fetch it
-// from are each left alone; a branch that cannot be cloned is not built.
-func TestMendOffersOnlyWhatItCanBuild(t *testing.T) {
-	t.Parallel()
-	failing := `echo '{"step":"check","state":"fail","kind":"deterministic"}'
-exit 1
-`
-	url := bareRepo(t, t.TempDir(), "m", map[string]string{"build.sh": failing})
-	cases := map[string]struct {
-		fixer  offering
-		remote bool
-	}{
-		"gives up":       {offering{}, true},
-		"with an error":  {offering{"fix", errors.New("unsure")}, true},
-		"with no remote": {offering{"fix", nil}, false},
-		"a missing fix":  {offering{"no-such-branch", nil}, true},
-	}
-	for name, each := range cases {
-		work := t.TempDir()
-		dressed(t, work, map[string]string{
-			".game": "name m\n", "build.sh": failing})
-		var said bytes.Buffer
-		members := []stack.Member{stack.Named("m", "v1")}
-		options := made(members, work, child).
-			Trying(count.One).
-			Fixing(each.fixer).
-			Saying(&said)
-		if each.remote {
-			options = options.From(roads{"m": url}.at)
-		}
-		got := ranOne(t, options)
-		if got.result != "failed at check" {
-			t.Errorf("%s: %+v", name, got)
-		}
-		offered := strings.Contains(said.String(), "a fix is offered")
-		if offered != (name == "a missing fix") {
-			t.Errorf("%s: said %q", name, said.String())
-		}
-	}
-}
-
-// TestAFixerIsGivenWhatFailed: the member, its directory, the step and
-// what the step said, once, for a deterministic failure; a failure on the
-// network, or a pass, is not offered.
-func TestAFixerIsGivenWhatFailed(t *testing.T) {
-	t.Parallel()
-	failing := `echo '{"step":"check","state":"fail","kind":"deterministic","text":"no"}'
-exit 1
-`
-	work := t.TempDir()
-	dressed(t, work, map[string]string{
-		".game": "name m\n", "build.sh": failing})
-	note := &recording{}
-	members := []stack.Member{stack.Named("m", "")}
-	options := made(members, work, child).
-		Trying(count.One).Fixing(note)
-	ranOne(t, options)
-	if got := strings.Join(note.asked, ","); got != "m|m|check|no" {
-		t.Errorf("the fixer was offered %q, want m|m|check|no", got)
-	}
-	none := &recording{}
-	options, _ = inPlace(t, passing)
-	ranOne(t, options.Fixing(none))
-	if count.Positive(len(none.asked)) {
-		t.Errorf("a pass was offered to the fixer: %v", none.asked)
 	}
 }
 

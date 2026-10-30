@@ -1,31 +1,28 @@
 package main
 
 import (
-	"context"
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/janearc/game/internal/count"
-	"go.uber.org/mock/gomock"
+	"github.com/janearc/game/internal/mutants"
 )
 
+// outcomeAt is the outcome in this state of a change on that line of
+// f in that file, with the tests that failed on it.
+func outcomeAt(state, file string, line int, failing string) mutants.Outcome {
+	return mutants.NewOutcome(
+		mutants.NewMutant(file, "f", line, "a", "b", nil), state, failing)
+}
+
 // benchOf is a bench of these suites with these broken packages and stale
-// lines. it says the run would take asked at the workers given. it says
-// later at four times as many.
-func benchOf(ctrl *gomock.Controller, suites []suiteCost, broken,
-	stale []string, workers int, asked, later time.Duration) *Mockfindings {
-	found := NewMockfindings(ctrl)
-	found.EXPECT().Suites().Return(suites)
-	found.EXPECT().Broken().Return(broken)
-	found.EXPECT().Stale().Return(stale)
-	found.EXPECT().Estimate(workers).Return(asked)
-	found.EXPECT().Estimate(fourTimes * workers).Return(later)
-	return found
+// lines.
+func benchOf(suites []mutants.Suite, broken, stale []string) mutants.Report {
+	return mutants.NewReport(nil, nil, broken, stale, suites)
 }
 
 // verdictCase is a run as the verdict reads it. it holds the packages that
@@ -131,19 +128,16 @@ func TestMutantOptionsRefuseNonsense(t *testing.T) {
 	}
 }
 
-// aBench is the one suite a bench of these tests times, and what it
-// takes to find it again.
+// aBench is the one suite a bench of these tests times, and the workers
+// it is asked at.
 type aBench struct {
-	ctrl    *gomock.Controller
-	suites  []suiteCost
+	suites  []mutants.Suite
 	workers int
-	took    time.Duration
 }
 
 // found is the bench with these broken packages and stale lines.
-func (bench aBench) found(broken, stale []string) *Mockfindings {
-	return benchOf(bench.ctrl, bench.suites, broken, stale,
-		bench.workers, bench.took, bench.took)
+func (bench aBench) found(broken, stale []string) mutants.Report {
+	return benchOf(bench.suites, broken, stale)
 }
 
 // the bench fails only for what could not be run. that is a broken package
@@ -153,9 +147,8 @@ func TestBenchFailsOnlyForWhatCouldNotRun(t *testing.T) {
 	slow := secondsHeld(t, "bench-slow-seconds")
 	workers := int(held(t, "bench-workers"))
 	bench := aBench{
-		ctrl: gomock.NewController(t), workers: workers, took: slow,
-		suites: []suiteCost{{dir: "a", took: slow, alone: slow,
-			mutants: count.One}},
+		workers: workers,
+		suites:  []mutants.Suite{mutants.NewSuite("a", slow, count.One)},
 	}
 	if err := tellBench(io.Discard, bench.found(nil, nil), workers,
 		false); err != nil {
@@ -180,10 +173,8 @@ func TestBenchFailsOnlyForWhatCouldNotRun(t *testing.T) {
 // the bench names each broken package and each stale line.
 func TestBenchNamesWhatIsBrokenAndStale(t *testing.T) {
 	t.Parallel()
-	ctrl := gomock.NewController(t)
 	var out strings.Builder
-	found := benchOf(ctrl, nil, []string{"c: no"}, []string{"old"},
-		count.One, time.Second, time.Second)
+	found := benchOf(nil, []string{"c: no"}, []string{"old"})
 	_ = tellBench(&out, found, count.One, false)
 	for _, want := range []string{"  broken: c: no\n",
 		"stale: .mutants names a change the source no longer has: old\n"} {
@@ -198,26 +189,14 @@ func TestBenchNamesWhatIsBrokenAndStale(t *testing.T) {
 // state.
 func TestTellMutantsSaysEachKind(t *testing.T) {
 	t.Parallel()
-	states := []struct{ state, at string }{
-		{"killed", "a.go:1 a.go f: a => b"},
-		{"survived", "b.go:2 b.go f: a => b"},
-		{"timed out", "c.go:3 c.go f: a => b"},
-		{"broken", "d.go:4 d.go f: a => b"},
-		{"equivalent", "e.go:5 e.go f: a => b"},
-		{"unbuildable", "f.go:6 f.go f: a => b"},
-		{"stopped", "g.go:7 g.go f: a => b"},
+	var outcomes []mutants.Outcome
+	for at, state := range []string{"killed", "survived", "timed out",
+		"broken", "equivalent", "unbuildable", "stopped"} {
+		file := string(rune('a'+at)) + ".go"
+		outcomes = append(outcomes, outcomeAt(state, file, at+1, "why"))
 	}
-	var outcomes []finding
-	for _, each := range states {
-		_, name, _ := strings.Cut(each.at, " ")
-		outcomes = append(outcomes, finding{state: each.state,
-			name: name, at: each.at, failing: "why"})
-	}
-	found := NewMockfindings(gomock.NewController(t))
-	found.EXPECT().Untested().Return([]string{"cmd/x"})
-	found.EXPECT().Broken().Return([]string{"p: no"})
-	found.EXPECT().Stale().Return([]string{"old"})
-	found.EXPECT().Outcomes().Return(outcomes)
+	found := mutants.NewReport(outcomes, []string{"cmd/x"}, []string{"p: no"},
+		[]string{"old"}, nil)
 	var out strings.Builder
 	err := tellMutants(&out, found, false)
 	if err == nil {
@@ -242,14 +221,10 @@ func TestTellMutantsSaysEachKind(t *testing.T) {
 // no survivor or timeout or break is said.
 func TestTellMutantsSaysNothingOfACleanRun(t *testing.T) {
 	t.Parallel()
-	found := NewMockfindings(gomock.NewController(t))
-	found.EXPECT().Untested().Return(nil)
-	found.EXPECT().Broken().Return(nil)
-	found.EXPECT().Stale().Return(nil)
-	found.EXPECT().Outcomes().Return([]finding{
-		{state: "killed", name: "n", at: "a.go:1 n"},
-		{state: "equivalent", name: "m", at: "a.go:2 m"},
-	})
+	found := mutants.NewReport([]mutants.Outcome{
+		outcomeAt("killed", "a.go", 1, ""),
+		outcomeAt("equivalent", "a.go", 2, ""),
+	}, nil, nil, nil, nil)
 	var out strings.Builder
 	if err := tellMutants(&out, found, false); err != nil {
 		t.Errorf("a clean run: %v", err)
@@ -276,119 +251,36 @@ func tinyTree(t *testing.T) string {
 	return tiny
 }
 
-// checkBenched holds a bench of the fixture to what the report timed. that
-// is one suite and its cost alone. it is the estimate over one worker.
-func checkBenched(t *testing.T, benched findings) {
+// mutated is game mutants over a copy of the fixture, with what it said.
+func mutated(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	suites := benched.Suites()
-	if len(suites) != count.One {
-		t.Fatalf("suites %+v", suites)
-	}
-	suite := suites[count.First]
-	many := time.Duration(suite.mutants)
-	if suite.mutants < count.One || suite.alone != suite.took*many {
-		t.Errorf("suite %+v", suite)
-	}
-	if got := benched.Estimate(count.One); got != suite.alone {
-		t.Errorf("estimate %s for %+v", got, suite)
-	}
+	var out strings.Builder
+	err := argsMutate(t, repoAt(tinyTree(t)), args, &out)
+	return out.String(), err
 }
 
-// checkRan holds a run of the fixture to what the report found. each
-// mutant is placed in tiny.go and named. the held function is killed. the
-// unheld one survives. nothing else is wrong with the tree.
-func checkRan(t *testing.T, ran findings) {
-	t.Helper()
-	states := map[string]bool{}
-	outcomes := ran.Outcomes()
-	for _, each := range outcomes {
-		states[each.state] = true
-		if !strings.Contains(each.at, "tiny.go:") ||
-			!strings.HasSuffix(each.at, each.name) ||
-			!strings.HasPrefix(each.name, "tiny.go ") {
-			t.Errorf("a finding placed wrongly: %+v", each)
-		}
-	}
-	if !states["killed"] || !states["survived"] {
-		t.Errorf("the fixture has a held and an unheld function: %v",
-			states)
-	}
-	lines := ran.Lines()
-	if len(lines) != len(outcomes) {
-		t.Errorf("%d lines for %d outcomes", len(lines), len(outcomes))
-	}
-	if ran.Untested() != nil || ran.Broken() != nil || ran.Stale() != nil {
-		t.Errorf("untested %v broken %v stale %v", ran.Untested(),
-			ran.Broken(), ran.Stale())
-	}
-}
-
-// diskMiner runs the real mutants over a real tree. the findings it gives
-// are the report's. the bench times the fixture's suite. the run names and
-// places its mutants and sorts them into states.
-func TestDiskMinerGivesTheReportsFindings(t *testing.T) {
+// the verb runs the tree it is given: the bench times the fixture's one
+// suite, and the run names and places its mutants and sorts them into
+// states. the held function is killed. the unheld one survives. the one
+// that will not build is said so. the tally is told once.
+func TestMutantsRunsTheTreeItIsGiven(t *testing.T) {
 	t.Parallel()
-	tiny := tinyTree(t)
-	opts, err := mutantOptions("", "", twoWorkers, suiteTimeout)
-	if err != nil {
-		t.Fatal(err)
+	benched, err := mutated(t, "--bench")
+	if err != nil || !strings.Contains(benched, "  . ") ||
+		!strings.Contains(benched, "bench: at most about") {
+		t.Errorf("a bench of the fixture: %v\n%s", err, benched)
 	}
-	var run miner = diskMiner{}
-	note := &settledNote{}
-	benched, err := run.Run(context.Background(), tiny, opts.Benchmarking(),
-		note.settle, note.decide)
-	if err != nil {
-		t.Fatal(err)
+	said, err := mutated(t)
+	if err == nil || !strings.Contains(err.Error(), "survived") {
+		t.Errorf("a run over a tree with a survivor: %v", err)
 	}
-	checkBenched(t, benched)
-	if note.calls != count.Nothing {
-		t.Errorf("a bench settled %d times", note.calls)
-	}
-	ran, err := run.Run(context.Background(), tiny, opts, note.settle,
-		note.decide)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkRan(t, ran)
-	checkSaid(t, ran, note.said)
-	if note.calls != count.One || len(note.found.Lines()) != len(ran.Lines()) {
-		t.Errorf("the run settled %d times", note.calls)
-	}
-}
-
-// settledNote notes what a miner settled with, and how often.
-type settledNote struct {
-	found findings
-	calls int
-	said  []string
-}
-
-// decide notes a line the miner said as it decided a mutant.
-func (note *settledNote) decide(line string) {
-	note.said = append(note.said, line)
-}
-
-// settle notes the findings the miner settled with.
-func (note *settledNote) settle(found findings) {
-	note.found = found
-	note.calls++
-}
-
-// checkSaid holds the lines said to the report lines of the survivors.
-func checkSaid(t *testing.T, ran findings, said []string) {
-	t.Helper()
-	var want []string
-	for place, each := range ran.Outcomes() {
-		if each.state == "survived" || each.state == "timed out" {
-			want = append(want, ran.Lines()[place])
+	for _, want := range []string{"survived: tiny.go:",
+		"killed ", "would not build "} {
+		if !strings.Contains(said, want) {
+			t.Errorf("want %q in:\n%s", want, said)
 		}
 	}
-	if len(want) == count.Nothing {
-		t.Fatal("the fixture has a survivor to say")
-	}
-	slices.Sort(want)
-	slices.Sort(said)
-	if !slices.Equal(said, want) {
-		t.Errorf("said\n%q\nwant\n%q", said, want)
+	if strings.Count(said, "mutants: ") != count.One {
+		t.Errorf("the tally was told more than once:\n%s", said)
 	}
 }

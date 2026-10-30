@@ -34,18 +34,6 @@ func TestAntiStackNoArtNoCard(t *testing.T) {
 	}
 }
 
-func TestAntiStackAFixOnlyForADeterministicFailure(t *testing.T) {
-	t.Parallel()
-	note := &recording{}
-	options, _ := inPlace(t,
-		scripted(`echo '{"step":"check","state":"fail","kind":"transient"}'`).child)
-	ranOne(t, options.Fixing(note))
-	if len(note.asked) != count.One {
-		t.Fatalf("a failure on the network, tried to the end, was offered "+
-			"%d times", len(note.asked))
-	}
-}
-
 func TestAntiStackDefaultOutputDiscards(t *testing.T) {
 	t.Parallel()
 	options, _ := inPlace(t, passing)

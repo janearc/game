@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"strings"
 	"testing"
 
@@ -14,7 +13,7 @@ import (
 func TestGargleSaysItsLine(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	if err := gargle(&out); err != nil || out.String() != gargled+"\n" {
+	if err := gargle(repoAt(""), blankConfig(), &out); err != nil || out.String() != gargled+"\n" {
 		t.Errorf("gargle: err %v, said %q", err, out.String())
 	}
 }
@@ -31,22 +30,23 @@ func (shut) Write([]byte) (int, error) { return count.Nothing, errShut }
 // anti-test: a terminal that refuses the line is said, not swallowed.
 func TestGargleSaysWhenItCouldNotSpeak(t *testing.T) {
 	t.Parallel()
-	if err := gargle(shut{}); !errors.Is(err, errShut) {
+	if err := gargle(repoAt(""), blankConfig(), shut{}); !errors.Is(err, errShut) {
 		t.Errorf("a refused write: %v", err)
 	}
 }
 
-// The verb is in game's table, and its --help is what it does.
+// The verb is declared to pzm, and its --help is pzm's page for it.
 func TestGargleIsAVerb(t *testing.T) {
 	t.Parallel()
-	if verbs["gargle-balls-dario"] == nil {
+	if !declaredVerb("gargle-balls-dario") {
 		t.Fatal("gargle-balls-dario is no verb")
 	}
-	var out bytes.Buffer
-	err := bare(&out, "gargle-balls-dario", aboutGargle, []string{"--help"})
-	if !errors.Is(err, flag.ErrHelp) ||
-		!strings.Contains(out.String(), "says one line about dario") {
-		t.Errorf("--help: err %v, out %q", err, out.String())
+	var out, errs bytes.Buffer
+	code := runPzm([]string{"gargle-balls-dario", "--help"}, t.TempDir(), "", "",
+		strings.NewReader(""), &out, &errs)
+	if code != exitOK || !strings.Contains(out.String(), "gargle-balls-dario") {
+		t.Errorf("--help: exit %d, out %q, errs %q", code, out.String(),
+			errs.String())
 	}
 }
 
@@ -54,8 +54,8 @@ func TestGargleIsAVerb(t *testing.T) {
 func TestGargleTakesNoWords(t *testing.T) {
 	t.Parallel()
 	work := repoAt(t.TempDir())
-	err := verbs["gargle-balls-dario"](work, blankConfig(),
-		[]string{"twice"})
+	err := viaPzm(t, "gargle-balls-dario", bareVerb("gargle-balls-dario",
+		aboutGargle, gargle), work, blankConfig(), []string{"twice"})
 	if err == nil || !strings.Contains(err.Error(), `"twice" is one`) {
 		t.Errorf("a word: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestGargleTakesNoWords(t *testing.T) {
 // Run bare, it speaks on the terminal and succeeds.
 func TestGargleRunsBare(t *testing.T) {
 	work := repoAt(t.TempDir())
-	if err := doGargle(work, blankConfig()); err != nil {
+	if err := gargle(work, blankConfig(), quiet); err != nil {
 		t.Errorf("doGargle: %v", err)
 	}
 }

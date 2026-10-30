@@ -101,7 +101,7 @@ func TestMachOBinariesFindsOnlyTheBinaries(t *testing.T) {
 	dir := t.TempDir()
 	writeMach(t, dir, "bin/app")
 	writeMach(t, dir, "bin/App.app/Contents/MacOS/App")
-	writeMach(t, dir, "bin/.deps/theft-x/src/a.o")
+	writeMach(t, dir, "bin/.cover/a.o")
 	shutFile := os.FileMode(0o600)
 	if err := os.WriteFile(filepath.Join(dir, "bin", "text.txt"), nil,
 		shutFile); err != nil {
@@ -139,55 +139,39 @@ func TestMachOBinariesRefusesNothingToCheck(t *testing.T) {
 	}
 }
 
-// aslr c builds as build-c does, then reads the header back.
-func TestAslrCBuildsThenChecks(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	stand := &tools{said: map[string]string{"otool": pieHeader}}
-	var out, errs bytes.Buffer
-	err := aslrCBy(dir, []string{"t.c"}, stand.run, noFetch, &out, &errs)
-	want := []call{
-		{dir, "cc", slices.Concat(cFlags, []string{"t.c"}, sealFlags,
-			[]string{"-o", "bin/t"})},
-		{dir, "codesign", []string{"-s", "-", "-o", "runtime", "-f", "bin/t"}},
-		{dir, "otool", []string{"-hv", "bin/t"}},
-	}
-	if err != nil || !slices.EqualFunc(stand.calls, want, sameCall) {
-		t.Errorf("err %v, calls %+v", err, stand.calls)
-	}
-	if out.String() != "aslr: bin/t is PIE\n" {
-		t.Errorf("said %q", out.String())
-	}
-}
-
 // a binary without PIE fails the check.
 func TestAslrRefusesANonPieBinary(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	openDir := os.FileMode(0o755)
+	if err := os.MkdirAll(filepath.Join(dir, "cmd", "hello"), openDir); err != nil {
+		t.Fatal(err)
+	}
+	writeMach(t, dir, "bin/hello")
 	stand := &tools{said: map[string]string{"otool": noPieHeader}}
-	var out, errs bytes.Buffer
-	err := aslrCBy(dir, []string{"t.c"}, stand.run, noFetch, &out, &errs)
+	var out bytes.Buffer
+	err := aslrGo(dir, nil, stand.run, &out)
 	if err == nil || !strings.Contains(err.Error(), "is not position-independent") {
 		t.Errorf("err %v", err)
 	}
 }
 
-// aslr with a word it does not know is refused before any tool runs.
+// aslr with no word, or a word it does not know, is refused before any
+// tool runs.
 func TestAslrRefusesWhatItCannotCheck(t *testing.T) {
 	t.Parallel()
 	for name, each := range map[string]struct {
 		args []string
 		want error
 	}{
-		"which":    {nil, errNoBinaries},
-		"rust":     {[]string{"rust"}, errASLRLanguage},
-		"c none":   {[]string{"c"}, errNoSources},
-		"c header": {[]string{"c", "t.h"}, errNotC},
-		"go word":  {[]string{"go", "extra"}, nil},
+		"which":   {nil, errASLRLanguage},
+		"rust":    {[]string{"rust"}, errASLRLanguage},
+		"c":       {[]string{"c", "t.c"}, errASLRLanguage},
+		"go word": {[]string{"go", "extra"}, nil},
 	} {
 		stand := &tools{}
-		var out, errs bytes.Buffer
-		err := aslrBy(t.TempDir(), each.args, stand.run, noFetch, &out, &errs)
+		var out bytes.Buffer
+		err := argsAslrBy(t, t.TempDir(), each.args, stand.run, &out)
 		switch name {
 		case "go word":
 			if err == nil || count.Positive(len(stand.calls)) {
@@ -213,37 +197,13 @@ func TestAslrGoBuildsThenChecks(t *testing.T) {
 	writeMach(t, dir, "bin/hello")
 	stand := &tools{said: map[string]string{"otool": pieHeader}}
 	var out bytes.Buffer
-	err := aslrGoBy(dir, nil, stand.run, &out)
+	err := aslrGo(dir, nil, stand.run, &out)
 	want := []call{
 		{dir, "go", []string{"build", "-trimpath", "-o", "bin/hello",
 			"./cmd/hello"}},
 		{dir, "otool", []string{"-hv", "bin/hello"}},
 	}
 	if err != nil || !slices.EqualFunc(stand.calls, want, sameCall) {
-		t.Errorf("err %v, calls %+v", err, stand.calls)
-	}
-}
-
-// isXcodebuild is whether the call was xcodebuild.
-func isXcodebuild(asked call) bool { return asked.name == "xcodebuild" }
-
-// readsTool is whether the call read bin/Tool's header.
-func readsTool(asked call) bool {
-	return asked.name == "otool" &&
-		slices.Equal(asked.args, []string{"-hv", "bin/Tool"})
-}
-
-// aslr xcode builds the scheme, then checks every Mach-O it left.
-func TestAslrXcodeBuildsThenChecks(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	writeMach(t, dir, "bin/Tool")
-	stand := &tools{said: map[string]string{"otool": pieHeader}}
-	var out, errs bytes.Buffer
-	err := aslrXcodeBy(dir, []string{"-scheme", "Tool"}, stand.run, noFetch,
-		&out, &errs)
-	if err != nil || !slices.ContainsFunc(stand.calls, isXcodebuild) ||
-		!slices.ContainsFunc(stand.calls, readsTool) {
 		t.Errorf("err %v, calls %+v", err, stand.calls)
 	}
 }

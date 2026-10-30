@@ -96,19 +96,6 @@ func rowOf(rows []stack.Row, name string) (stack.Row, bool) {
 	return stack.Row{}, false
 }
 
-// selective offers a fix only for the member that has one.
-type selective struct{}
-
-// Fix offers the fix branch to fixme and gives up on the rest.
-func (selective) Fix(
-	_ context.Context, member stack.Member, _, _, _ string,
-) (string, error) {
-	if member.Name() == "fixme" {
-		return "fix", nil
-	}
-	return "", nil
-}
-
 // the good build says lint counted two.
 const goodBuild = `echo '{"step":"lint","state":"ok","count":2}'`
 
@@ -125,7 +112,7 @@ func failOnce(countDir, step, kind string) string {
 // reposFor is a road for every outcome a member can have, built in dir:
 // a pass with its lint count, a deterministic failure, a transient
 // failure that passes when tried again, a test that fails once and is
-// flaky, a failure fixed on a branch, and a ref that does not exist.
+// flaky, and a ref that does not exist.
 func reposFor(t *testing.T, dir string) roads {
 	t.Helper()
 	countDir := filepath.Join(dir, "counts")
@@ -135,9 +122,6 @@ func reposFor(t *testing.T, dir string) roads {
 	}
 	badBuild := `echo '{"step":"check","state":"fail",` +
 		`"kind":"deterministic","text":"no"}'; exit 1` + "\n"
-	fixBuild := `if [ -e FIXED ]; then ` + goodBuild + `; else ` +
-		`echo '{"step":"build","state":"fail","kind":"deterministic"}'; ` +
-		`exit 1; fi` + "\n"
 	return roads{
 		"good": bareRepo(t, dir, "good",
 			map[string]string{"build.sh": goodBuild + "\n"}),
@@ -146,8 +130,6 @@ func reposFor(t *testing.T, dir string) roads {
 			"build.sh": failOnce(countDir, "build", "transient") + "\n"}),
 		"flaky": bareRepo(t, dir, "flaky", map[string]string{
 			"build.sh": failOnce(countDir, "test", "deterministic") + "\n"}),
-		"fixme": bareRepo(t, dir, "fixme",
-			map[string]string{"build.sh": fixBuild}),
 		"gone": bareRepo(t, dir, "gone",
 			map[string]string{"build.sh": goodBuild + "\n"}),
 	}
@@ -162,7 +144,6 @@ func TestRun(t *testing.T) {
 		stack.Named("bad", "v1"),
 		stack.Named("net", "v1"),
 		stack.Named("flaky", "v1"),
-		stack.Named("fixme", "v1"),
 		stack.Named("gone", "v9"),
 	}
 	slept := &waited{}
@@ -174,7 +155,6 @@ func TestRun(t *testing.T) {
 	options := made(members, filepath.Join(dir, "work"), child).
 		From(urls.at).
 		InParallel(len(members)).
-		Fixing(selective{}).
 		Saying(&out).
 		Sleeping(slept.record)
 	rows, err := runBefore(t, context.Background(), options)
@@ -194,7 +174,6 @@ func checkResults(t *testing.T, rows []stack.Row, slept *waited) {
 		"bad":   "failed",
 		"net":   "ok",
 		"flaky": "flaky",
-		"fixme": "fixed on fix",
 		"gone":  "failed",
 	}
 	for _, row := range rows {
@@ -223,14 +202,12 @@ func checkResults(t *testing.T, rows []stack.Row, slept *waited) {
 	}
 }
 
-// checkTable is the table a person reads: the fix's branch, the
-// failure's step, and the tries.
+// checkTable is the table a person reads: the failure's step.
 func checkTable(t *testing.T, rows []stack.Row) {
 	t.Helper()
 	var table bytes.Buffer
 	stack.Table(&table, rows)
-	if !strings.Contains(table.String(), "fixed on fix") ||
-		!strings.Contains(table.String(), "failed at check") {
+	if !strings.Contains(table.String(), "failed at check") {
 		t.Errorf("table:\n%s", table.String())
 	}
 }

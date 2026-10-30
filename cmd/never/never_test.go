@@ -351,7 +351,7 @@ func (failure failedRandom) read([]byte) (int, error) {
 func TestSaltRefusesRandomFailure(t *testing.T) {
 	wanted := failedRandom{err: errors.New("random failed")}
 	list := filepath.Join(t.TempDir(), "sweep.words")
-	_, err := saltBesideUsing(list, wanted.read)
+	_, err := saltBeside(list, wanted.read)
 	if !errors.Is(err, wanted.err) {
 		t.Fatalf("saltBeside error %v, want %v", err, wanted.err)
 	}

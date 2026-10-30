@@ -32,7 +32,7 @@ echo "1: bin/game check"
 bin/game check
 echo "1: bin/game build"
 bin/game build
-bin/game version
+bin/game --age
 if [ "$1" = "install" ]; then
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$(pwd)/bin/game" "$HOME/.local/bin/game"

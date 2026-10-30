@@ -7,6 +7,7 @@ import (
 
 	"github.com/janearc/game/internal/config"
 	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/lint"
 )
 
 // hardened is a config whose .game says lint harden.
@@ -24,7 +25,7 @@ const setuidGo = "package main\n\nimport \"syscall\"\n\n" +
 // it, as over any lint finding.
 func TestReleaseRefusesHardenFindingsUnlessMeant(t *testing.T) {
 	work := cleaned(t, "root", map[string]string{"a.go": setuidGo})
-	standTools(t, "staticcheck", "semgrep")
+	standTools(t, "staticcheck")
 	var out bytes.Buffer
 	err := releaseChecks(work, hardened(t), false, (&asked{}).run, &out)
 	if err == nil || !strings.HasPrefix(err.Error(), "refused: the lint found") {
@@ -33,7 +34,7 @@ func TestReleaseRefusesHardenFindingsUnlessMeant(t *testing.T) {
 	if !strings.Contains(out.String(), "syscall.Setuid gives the process") {
 		t.Errorf("said %q", out.String())
 	}
-	stand := &asked{gives: map[string]string{"semgrep": `{"results":[]}`}}
+	stand := &asked{}
 	if err := releaseChecks(work, hardened(t), true, stand.run,
 		&bytes.Buffer{}); err != nil {
 		t.Errorf("meant: %v", err)
@@ -46,36 +47,46 @@ func TestReleaseRefusesHardenFindingsUnlessMeant(t *testing.T) {
 // every tool standing and saying nothing, the release passes. without
 // lint harden, none of it is asked.
 func TestReleaseRunsTheHardenLayersBeyondSource(t *testing.T) {
-	work := cleaned(t, "root", map[string]string{"README.md": "# x\n"})
+	work := cleaned(t, "root", map[string]string{"README.md": "# x\n",
+		"go.mod": "module example.invalid/x\n"})
 	standTools(t, "staticcheck")
 	var out bytes.Buffer
 	stand := &asked{}
 	err := releaseChecks(work, hardened(t), false, stand.run, &out)
 	if err == nil || !strings.HasPrefix(err.Error(), "refused: harden found") ||
-		!strings.Contains(out.String(), "semgrep did not run") {
-		t.Errorf("semgrep out: %v, said %q", err, out.String())
+		!strings.Contains(out.String(), "gosec did not run") {
+		t.Errorf("gosec out: %v, said %q", err, out.String())
 	}
 	out.Reset()
 	err = releaseChecks(work, hardened(t), true, stand.run, &out)
-	if err != nil || !strings.Contains(out.String(), "semgrep did not run") ||
-		!strings.Contains(out.String(), "harden found 1, and you meant it") {
-		t.Errorf("semgrep out, meant: %v, said %q", err, out.String())
+	if err != nil || !strings.Contains(out.String(), "gosec did not run") ||
+		!strings.Contains(out.String(), "harden found 2, and you meant it") {
+		t.Errorf("gosec out, meant: %v, said %q", err, out.String())
 	}
-	standTools(t, "staticcheck", "semgrep")
-	stand = &asked{gives: map[string]string{"semgrep": `{"results":[]}`}}
+	standTools(t, "staticcheck", "gosec", "govulncheck")
+	stand = &asked{gives: map[string]string{"gosec": `{"Issues":[]}`}}
 	if err := releaseChecks(work, hardened(t), false, stand.run,
 		&bytes.Buffer{}); err != nil {
 		t.Errorf("clean: %v", err)
 	}
-	if len(stand.said) != count.One ||
-		!strings.HasSuffix(stand.said[count.First],
-			"/semgrep --json --config auto .") {
+	analyzers := stand.said[len(stand.said)-count.Next(count.One):]
+	if len(analyzers) != count.Next(count.One) ||
+		!strings.HasSuffix(analyzers[count.First],
+			"/gosec -no-fail -fmt=json ./...") ||
+		!strings.HasSuffix(analyzers[count.Next(count.First)],
+			"/govulncheck -json ./...") {
 		t.Errorf("asked %q", stand.said)
 	}
 	stand = &asked{}
 	if err := releaseChecks(work, unhardened(), false, stand.run,
-		&bytes.Buffer{}); err != nil || count.Positive(len(stand.said)) {
-		t.Errorf("without harden: %v, asked %q", err, stand.said)
+		&bytes.Buffer{}); err != nil {
+		t.Errorf("without harden: %v", err)
+	}
+	for _, line := range stand.said {
+		if strings.Contains(line, "gosec") ||
+			strings.Contains(line, "govulncheck") {
+			t.Errorf("without harden, asked %q", line)
+		}
 	}
 }
 
@@ -112,7 +123,7 @@ func TestHardenOfKeepsTheRule(t *testing.T) {
 	dir, _ := linted(t)
 	write(t, dir+"/b.go", setuidGo)
 	cfg := gamed(t, "lint width 30", "lint harden")
-	linter, err := described(cfg)
+	linter, err := lint.Describe(cfg.Lint())
 	if err != nil {
 		t.Fatal(err)
 	}

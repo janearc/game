@@ -41,12 +41,12 @@ func TestSweepReadsTheRevisionItIsTold(t *testing.T) {
 	t.Parallel()
 	work := repoAt(swept(t))
 	var out bytes.Buffer
-	if err := sweepTo(work, blankConfig(), nil, words(t),
+	if err := verbTo(t, "sweep", sweepVerb, work, blankConfig(), nil,
 		&out); err != nil || out.String() != "sweep: HEAD is clean\n" {
 		t.Errorf("HEAD: %v, said %q", err, out.String())
 	}
 	out.Reset()
-	err := sweepTo(work, blankConfig(), []string{"HEAD~1"}, words(t), &out)
+	err := verbTo(t, "sweep", sweepVerb, work, blankConfig(), []string{"HEAD~1"}, &out)
 	if err == nil || err.Error() != "2 hit(s)" {
 		t.Errorf("HEAD~1: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestSweepReadsTheRevisionItIsTold(t *testing.T) {
 		t.Errorf("HEAD~1 said clean:\n%s", out.String())
 	}
 	out.Reset()
-	err = sweepTo(work, blankConfig(), []string{"HEAD~2"}, words(t), &out)
+	err = verbTo(t, "sweep", sweepVerb, work, blankConfig(), []string{"HEAD~2"}, &out)
 	if err == nil || err.Error() != "1 hit(s)" ||
 		strings.Contains(out.String(), "clean") {
 		t.Errorf("HEAD~2: %v, said %q", err, out.String())
@@ -69,18 +69,23 @@ func TestSweepReadsTheRevisionItIsTold(t *testing.T) {
 // with no never-words a sweep is never clean, and a revision that is
 // not there, or a tree it cannot read, is the error.
 func TestSweepSaysWhatItCannotSay(t *testing.T) {
-	t.Parallel()
 	work := repoAt(swept(t))
 	var out bytes.Buffer
-	err := sweepTo(work, blankConfig(), nil, sweep.Baked(fstest.MapFS{}), &out)
+	// not parallel: the never-words are the program's, and this test
+	// takes them away for the one sweep.
+	baked := neverWords
+	neverWords = func() sweep.Never { return sweep.Baked(fstest.MapFS{}) }
+	err := verbTo(t, "sweep", sweepVerb, work, blankConfig(), nil, &out)
+	neverWords = baked
 	if err == nil || !strings.HasPrefix(err.Error(),
 		"HEAD has none of the fixed patterns, but this game was "+
 			"built without never-words") ||
 		strings.Contains(out.String(), "clean") {
 		t.Errorf("no never-words: %v, said %q", err, out.String())
 	}
-	err = sweepTo(work, blankConfig(), []string{"nowhere"}, words(t),
+	err = verbTo(t, "sweep", sweepVerb, work, blankConfig(), []string{"nowhere"},
 		&bytes.Buffer{})
+
 	if err == nil {
 		t.Error("a revision that is not there was swept")
 	}
@@ -90,7 +95,7 @@ func TestSweepSaysWhatItCannotSay(t *testing.T) {
 		"160000,"+fakeObject+",sub")
 	gitAt(t, work.Dir(), "commit", "-q", "-m", "a submodule not here")
 	out.Reset()
-	if err := sweepTo(work, blankConfig(), nil, words(t),
+	if err := verbTo(t, "sweep", sweepVerb, work, blankConfig(), nil,
 		&out); err == nil || strings.Contains(out.String(), "clean") {
 		t.Errorf("a tree it cannot read: %v, said %q", err,
 			out.String())

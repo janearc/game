@@ -100,7 +100,7 @@ func TestStickReportsFailedHeadLookupAfterCommit(t *testing.T) {
 	t.Setenv("REAL_GIT", gitPath)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	claim, err := sticky.Stick(work, road, "ada")
-	if !says(err, "head lookup refused") || claim.Holder() != "" {
+	if !says(err, "head lookup refused") || claim != nil {
 		t.Fatalf("failed lookup returned a claim: %+v %v", claim, err)
 	}
 	command := exec.Command(gitPath, "-C", work.Dir(), "rev-parse", "HEAD")

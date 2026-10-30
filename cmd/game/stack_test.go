@@ -132,7 +132,7 @@ func TestBuildStackHereCountsWhatBuiltClean(t *testing.T) {
 	}
 	for _, each := range cases {
 		var out bytes.Buffer
-		err := buildStack(tree, cfg, []string{"--here"}, &out, each.child)
+		err := argsBuildStack(t, tree, cfg, []string{"--here"}, &out, each.child)
 		said := out.String()
 		if !strings.Contains(said, "stack: 2 members from this clone") ||
 			!strings.Contains(said, each.want) {
@@ -170,7 +170,7 @@ func TestBuildStackRefusesWhatItCannotBuild(t *testing.T) {
 	}
 	for _, each := range cases {
 		var out bytes.Buffer
-		err := buildStack(tree, each.cfg, each.args, &out, never.child)
+		err := argsBuildStack(t, tree, each.cfg, each.args, &out, never.child)
 		if err == nil || !strings.Contains(err.Error(), each.want) {
 			t.Errorf("%s: want %q, got %v\n%s", each.name, each.want, err,
 				out.String())
@@ -203,7 +203,7 @@ func TestBuildStackClonesTheMemberFromTheRemoteAskedFor(t *testing.T) {
 		}
 		cfg := configOf(t, remotes, []string{"stack a main"})
 		var out bytes.Buffer
-		err := buildStack(tree, cfg, []string{"--from", from}, &out,
+		err := argsBuildStack(t, tree, cfg, []string{"--from", from}, &out,
 			lintChild{}.child)
 		if err != nil || !strings.Contains(out.String(), "stack: 1 of 1 built clean") {
 			t.Errorf("from %s: err %v\n%s", from, err, out.String())
@@ -223,7 +223,7 @@ func TestBuildStackStopsWhenItCannotMakeItsWorkDirectory(t *testing.T) {
 	write(t, filepath.Join(dir, "bin"), "in the way\n")
 	cfg := configOf(t, block("a", "", dir), []string{"stack a main"})
 	never := &neverRuns{}
-	err := buildStack(repoAt(dir), cfg, nil, &bytes.Buffer{}, never.child)
+	err := argsBuildStack(t, repoAt(dir), cfg, nil, &bytes.Buffer{}, never.child)
 	if err == nil || never.ran {
 		t.Errorf("err %v, child ran %v", err, never.ran)
 	}
@@ -314,7 +314,7 @@ func TestReleaseStackPreparesAndSaysSo(t *testing.T) {
 	own, dist, member, cfg := stackFixture(t)
 	var out bytes.Buffer
 	var err error
-	err = releaseStack(own, cfg, "v1", "dist", false, &out, made)
+	err = releaseStack(own, cfg, "v1", "dist", false, &out, testCommit, testBuilt)
 	said := out.String()
 	for _, line := range []string{
 		"stack s v1: 1 members from their dists, prepared ",
@@ -333,12 +333,12 @@ func TestReleaseStackPreparesAndSaysSo(t *testing.T) {
 		"README.md": "wow!\n",
 	})
 	out.Reset()
-	err = releaseStack(own, cfg, "v2", "dist", false, &out, made)
+	err = releaseStack(own, cfg, "v2", "dist", false, &out, testCommit, testBuilt)
 	kept, _ := own.Git("rev-parse", "--verify", "-q", refOf("v2"))
 	if err == nil || !strings.Contains(err.Error(), "not clean") || kept != "" {
 		t.Errorf("not clean: err %v, ref %q\n%s", err, kept, out.String())
 	}
-	err = releaseStack(own, cfg, "v2", "dist", true, &out, made)
+	err = releaseStack(own, cfg, "v2", "dist", true, &out, testCommit, testBuilt)
 	if err != nil {
 		t.Errorf("meant: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestReleaseStackRefusesBeforeItStarts(t *testing.T) {
 	noStackBlocks := slices.Concat(distOnly, memberBlock)
 	noStack := loadedAs(t, "s", noStackBlocks, nil)
 	var out bytes.Buffer
-	err := releaseStack(own, cfg, "v1", "dist", false, &out, unstamped)
+	err := releaseStack(own, cfg, "v1", "dist", false, &out, devCommit, "")
 	if err == nil || !strings.Contains(err.Error(), "built by go rather than by game") {
 		t.Errorf("unstamped: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestReleaseStackRefusesBeforeItStarts(t *testing.T) {
 		{"a from that is neither", cfg, "nope", "--from is road or dist"},
 	}
 	for _, each := range cases {
-		err = releaseStack(own, each.cfg, "v1", each.from, false, &out, made)
+		err = releaseStack(own, each.cfg, "v1", each.from, false, &out, testCommit, testBuilt)
 		if err == nil || !strings.Contains(err.Error(), each.want) {
 			t.Errorf("%s: want %q, got %v", each.name, each.want, err)
 		}
@@ -405,13 +405,11 @@ func TestStackMembersCarryTheirs(t *testing.T) {
 // dist has the tree already, that alone.
 func TestTellStackedSaysWhatWasLaid(t *testing.T) {
 	t.Parallel()
-	res := &stackedUp{
-		members: []string{"crush", "keel", "okapi"},
-		work:    "go 1.27\n",
-		patched: map[string]int{
-			"crush": count.Next(count.One), "keel": count.One},
-		commit: "0123456789abcdef",
-	}
+	members := []string{"crush", "keel", "okapi"}
+	patched := map[string]int{
+		"crush": count.Next(count.One), "keel": count.One}
+	res := release.NewStacked("0123456789abcdef", false, members, nil,
+		"go 1.27\n", nil, patched)
 	var out bytes.Buffer
 	tellStacked(&out, "fancy", "v1", "road", "/dist.git", res)
 	want := "stack fancy v1: 3 members from their roads, prepared 0123456\n" +
@@ -422,7 +420,8 @@ func TestTellStackedSaysWhatWasLaid(t *testing.T) {
 	if out.String() != want {
 		t.Errorf("said:\n%s\nwant:\n%s", out.String(), want)
 	}
-	res.skipped = true
+	res = release.NewStacked("0123456789abcdef", true, members, nil,
+		"go 1.27\n", nil, patched)
 	out.Reset()
 	tellStacked(&out, "fancy", "v1", "road", "/dist.git", res)
 	if got := out.String(); got !=
@@ -514,22 +513,6 @@ func TestStackLintLeavesTheirsToTheirOwnRules(t *testing.T) {
 	}
 }
 
-// stackedUp is a stand-in assembly for tellStacked: what a stack release
-// produced, as a test says it.
-type stackedUp struct {
-	skipped bool
-	commit  string
-	members []string
-	work    string
-	patched map[string]int
-}
-
-func (made *stackedUp) Skipped() bool           { return made.skipped }
-func (made *stackedUp) Commit() string          { return made.commit }
-func (made *stackedUp) Members() []string       { return made.members }
-func (made *stackedUp) Work() string            { return made.work }
-func (made *stackedUp) Patched(name string) int { return made.patched[name] }
-
 // release stack on a claimed root is refused before anything is
 // assembled, as a release is: the claim would reach dist.
 func TestReleaseStackRefusesAClaimedRoot(t *testing.T) {
@@ -539,7 +522,7 @@ func TestReleaseStackRefusesAClaimedRoot(t *testing.T) {
 	if _, err := sticky.Stick(one, road, "partner"); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
-	err := releaseStack(one, cfg, "v1", "dist", false, io.Discard, made)
+	err := releaseStack(one, cfg, "v1", "dist", false, io.Discard, testCommit, testBuilt)
 	if err == nil || !strings.Contains(err.Error(), "unstick first") {
 		t.Fatalf("want the unstick refusal, got %v", err)
 	}
@@ -560,7 +543,7 @@ func TestReleaseStackChecksTheRootAsAReleaseDoes(t *testing.T) {
 	needing := loadedAs(t, "s", projects,
 		[]string{"stack a main", "needs TOKEN a test"})
 	var out bytes.Buffer
-	err := releaseStack(own, needing, "v1", "dist", false, &out, made)
+	err := releaseStack(own, needing, "v1", "dist", false, &out, testCommit, testBuilt)
 	if err == nil || !strings.Contains(err.Error(),
 		"set the needed settings") ||
 		!strings.Contains(out.String(), "TOKEN is needed: a test") {
@@ -578,7 +561,7 @@ func TestReleaseStackKeepsAnEarlierStackWhenItRefuses(t *testing.T) {
 	t.Parallel()
 	own, _, member, cfg := stackFixture(t)
 	if err := releaseStack(own, cfg, "v1", "dist", false, io.Discard,
-		made); err != nil {
+		testCommit, testBuilt); err != nil {
 		t.Fatal(err)
 	}
 	earlier, _ := own.Git("rev-parse", "--verify", refOf("v1"))
@@ -586,7 +569,7 @@ func TestReleaseStackKeepsAnEarlierStackWhenItRefuses(t *testing.T) {
 		".game":     "name a\nlint exclaim\n",
 		"README.md": "wow!\n",
 	})
-	err := releaseStack(own, cfg, "v1", "dist", false, io.Discard, made)
+	err := releaseStack(own, cfg, "v1", "dist", false, io.Discard, testCommit, testBuilt)
 	if err == nil || !strings.Contains(err.Error(), "not clean") {
 		t.Fatalf("not clean: %v", err)
 	}
@@ -606,7 +589,7 @@ func TestBuildStackHereDoesNotAskFrom(t *testing.T) {
 	cfg := gamed(t, "stack a main")
 	var out bytes.Buffer
 	args := []string{"--here", "--from", "nope"}
-	if err := buildStack(tree, cfg, args, &out, lintChild{}.child); err != nil {
+	if err := argsBuildStack(t, tree, cfg, args, &out, lintChild{}.child); err != nil {
 		t.Errorf("%v\n%s", err, out.String())
 	}
 }
@@ -618,7 +601,7 @@ func TestReleaseStackRefusesAClaimItCannotRead(t *testing.T) {
 	one, _, _, _ := stickyFixture(t)
 	_, _, _, cfg := stackFixture(t)
 	stuckUnreadably(t, one)
-	err := releaseStack(one, cfg, "v1", "dist", false, io.Discard, made)
+	err := releaseStack(one, cfg, "v1", "dist", false, io.Discard, testCommit, testBuilt)
 	if err == nil || !strings.Contains(err.Error(), ".sticky") {
 		t.Errorf("an unreadable claim: %v, want .sticky named", err)
 	}
@@ -634,14 +617,14 @@ func TestReleaseStackRefusesAMemberThatDoesNotVet(t *testing.T) {
 	t.Parallel()
 	own, _, member, cfg := stackFixture(t)
 	if err := releaseStack(own, cfg, "v1", "dist", false, io.Discard,
-		made); err != nil {
+		testCommit, testBuilt); err != nil {
 		t.Fatalf("the member as it was: %v", err)
 	}
 	commitFiles(t, member.Dir(), map[string]string{
 		"a.go": "package a\n\nimport \"fmt\"\n\n" +
 			"// A is a.\nfunc A() { fmt.Printf(\"%d\\n\", \"a\") }\n",
 	})
-	err := releaseStack(own, cfg, "v2", "dist", false, io.Discard, made)
+	err := releaseStack(own, cfg, "v2", "dist", false, io.Discard, testCommit, testBuilt)
 	kept, _ := own.Git("rev-parse", "--verify", "-q", refOf("v2"))
 	if err == nil || !strings.Contains(err.Error(), "vet") || kept != "" {
 		t.Errorf("a member that does not vet: err %v, ref %q", err, kept)
@@ -656,39 +639,9 @@ func TestReleaseStackRefusesAMemberWhoseTestsFail(t *testing.T) {
 		"a_test.go": "package a\n\nimport \"testing\"\n\n" +
 			"func TestA(t *testing.T) { t.Fatal(\"no\") }\n",
 	})
-	err := releaseStack(own, cfg, "v1", "dist", false, io.Discard, made)
+	err := releaseStack(own, cfg, "v1", "dist", false, io.Discard, testCommit, testBuilt)
 	kept, _ := own.Git("rev-parse", "--verify", "-q", refOf("v1"))
 	if err == nil || !strings.Contains(err.Error(), "FAIL") || kept != "" {
 		t.Errorf("a member whose tests fail: err %v, ref %q", err, kept)
-	}
-}
-
-// goAssembly runs go through the runner it was given, in the directory it
-// was given.
-func TestGoAssemblyVetsAndTestsInTheDirectoryGiven(t *testing.T) {
-	t.Parallel()
-	stand := &asked{}
-	via := goAssembly{cfg: blankConfig(), by: stand.run, out: io.Discard}
-	if err := via.Vet("/x/mod"); err != nil {
-		t.Fatal(err)
-	}
-	if err := via.Test("/x/mod"); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"mod: go vet ./...", "mod: go test ./..."}
-	if !slices.Equal(stand.said, want) {
-		t.Errorf("asked %q, want %q", stand.said, want)
-	}
-}
-
-// goAssembly says what go said when it refuses.
-func TestGoAssemblyRefusesWhatGoRefuses(t *testing.T) {
-	t.Parallel()
-	for _, what := range []string{"go vet", "go test"} {
-		stand := &asked{fail: what}
-		via := goAssembly{cfg: blankConfig(), by: stand.run, out: io.Discard}
-		if via.Vet("/x/mod") == nil && via.Test("/x/mod") == nil {
-			t.Errorf("%s refused and nothing said so", what)
-		}
 	}
 }

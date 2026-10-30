@@ -1,0 +1,19 @@
+# vim: set filetype=game:
+# game: nilgai, one source record for the catalogues
+#
+# name says which project this is. the builder's config has a block for
+# it that says where its road is; this file never names a remote.
+name nilgai
+
+# lint rules, copied from the builder's so both of us lint alike.
+lint width 80
+lint rows 25
+lint comments
+lint print
+lint exclaim
+lint shout
+lint words hyperscaler enterprise-grade blazing-fast load-bearing
+lint paragraph 4
+
+lint allow README.md words paragraph rows
+sweep allow README.md emails

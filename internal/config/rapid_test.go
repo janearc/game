@@ -20,13 +20,19 @@ func TestRapidChecks(t *testing.T) {
 		t.Errorf("nothing said leaves the checks: %d %v",
 			cfg.RapidChecks(), err)
 	}
-	for _, bad := range []string{"rapid checks 0", "rapid checks ten",
-		"rapid 1000", "rapid other 1000", "rapid checks 1 2"} {
+	for bad, why := range map[string]string{
+		"rapid checks 0":   "rapid takes checks N",
+		"rapid checks ten": "rapid takes checks N",
+		"rapid other 1000": "rapid takes checks N",
+		// pzm counts the words before game reads them
+		"rapid 1000":       "this key takes 2 words, and this line has 1",
+		"rapid checks 1 2": "this key takes 2 words, and this line has 3",
+	} {
 		var cfg config.Config
 		err := cfg.Parse(strings.NewReader(bad+"\n"), ".game",
 			"/srv/ada", false)
-		if err == nil || !strings.Contains(err.Error(), ".game:1") ||
-			!strings.Contains(err.Error(), "rapid takes checks N") {
+		if err == nil || !strings.Contains(err.Error(), ".game:1: rapid: ") ||
+			!strings.Contains(err.Error(), why) {
 			t.Errorf("%q: %v", bad, err)
 		}
 	}

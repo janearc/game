@@ -14,8 +14,8 @@ import (
 
 // the never-words drawn here are made up and short; the filler words
 // are longer than any of them, so no filler is ever one by accident.
-// longest is the most words a never-word may run to: three, by
-// definition, a word or a name of two or three.
+// longest is the most words a never-word may run to: three, as defined:
+// a word or a name of two or three.
 const longest = 3
 
 var (

@@ -55,7 +55,7 @@ commit it was built from, marked `-dirty` when the tree had changes, and
 the time of that commit, not the clock. They are who built it, and the
 sessions named in the commits.
 
-`game version` reads back the commit and its time. a tool built this way
+`game --age` reads back the commit and its time. a tool built this way
 can read the builder and the sessions with `--who`. go's `-trimpath` keeps
 the builder's paths out of the binary.
 

@@ -38,7 +38,7 @@ func TestStickSaysItStuckAndPushed(t *testing.T) {
 	t.Parallel()
 	one, _, road, _ := stickyFixture(t)
 	var out bytes.Buffer
-	if err := stickTo(one, cfgFor(t, "ada", road, ""), &out); err != nil {
+	if err := stick(one, cfgFor(t, "ada", road, ""), &out); err != nil {
 		t.Fatal(err)
 	}
 	want := "stick: stuck on work by ada\npushed work to the road, " +
@@ -54,11 +54,11 @@ func TestStickRefusesInItsOwnWords(t *testing.T) {
 	t.Parallel()
 	one, two, road, _ := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, "")
-	if err := stickTo(one, cfgFor(t, "", road, ""),
+	if err := stick(one, cfgFor(t, "", road, ""),
 		&bytes.Buffer{}); !has(err, "stick needs an author") {
 		t.Errorf("no author: %v", err)
 	}
-	if err := stickTo(one, dotted(t, "author ada"),
+	if err := stick(one, dotted(t, "author ada"),
 		&bytes.Buffer{}); !has(err, "project blocks") {
 		t.Errorf("no road: %v", err)
 	}
@@ -68,19 +68,19 @@ func TestStickRefusesInItsOwnWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitFile(t, two, "a2.txt", "two\n", "two's")
-	if err := stickTo(two, cfg, &bytes.Buffer{}); !has(err, "diverged") {
+	if err := stick(two, cfg, &bytes.Buffer{}); !has(err, "diverged") {
 		t.Errorf("a branch it cannot catch up: %v", err)
 	}
 	if _, ok, _ := sticky.Stuck(two.Dir()); ok {
 		t.Error("stuck on a branch it could not catch up")
 	}
 	gitAt(t, one.Dir(), "checkout", "-q", "main")
-	if err := stickTo(one, cfg, &bytes.Buffer{}); !has(err, "refuses main") {
+	if err := stick(one, cfg, &bytes.Buffer{}); !has(err, "refuses main") {
 		t.Errorf("main: %v", err)
 	}
 	gitAt(t, one.Dir(), "checkout", "-q", "work")
 	refusing(t, road)
-	if err := stickTo(one, cfg, &bytes.Buffer{}); !has(err,
+	if err := stick(one, cfg, &bytes.Buffer{}); !has(err,
 		"stuck here, but the claim did not reach the road") {
 		t.Errorf("a road that refuses: %v", err)
 	}
@@ -91,15 +91,15 @@ func TestStickySaysWhereItStuck(t *testing.T) {
 	t.Parallel()
 	one, two, road, _ := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, "")
-	if err := stickyTo(two, blankConfig(),
+	if err := follow(two, blankConfig(),
 		&bytes.Buffer{}); !has(err, "project blocks") {
 		t.Errorf("no road: %v", err)
 	}
-	if err := stickyTo(unborn(t), cfg, &bytes.Buffer{}); !has(err,
+	if err := follow(unborn(t), cfg, &bytes.Buffer{}); !has(err,
 		"no branch to name") {
 		t.Errorf("no branch: %v", err)
 	}
-	if err := stickyTo(two, cfg, &bytes.Buffer{}); err == nil {
+	if err := follow(two, cfg, &bytes.Buffer{}); err == nil {
 		t.Error("stuck to a branch the road does not have")
 	}
 	commitFile(t, one, "more.txt", "more\n", "more")
@@ -108,7 +108,7 @@ func TestStickySaysWhereItStuck(t *testing.T) {
 	}
 	tip := gitAt(t, one.Dir(), "rev-parse", "HEAD")
 	var out bytes.Buffer
-	if err := stickyTo(two, cfg, &out); err != nil ||
+	if err := follow(two, cfg, &out); err != nil ||
 		out.String() != "sticky: stuck to "+repo.Short(tip)+"\n" {
 		t.Errorf("%v, said %q", err, out.String())
 	}
@@ -121,38 +121,38 @@ func TestUnstickSaysWhatItDidOrWhyNot(t *testing.T) {
 	t.Parallel()
 	one, two, road, _ := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, "")
-	if err := unstickTo(one, blankConfig(),
+	if err := unstick(one, blankConfig(),
 		&bytes.Buffer{}); !has(err, "project blocks") {
 		t.Errorf("no road: %v", err)
 	}
-	if err := unstickTo(unborn(t), cfg, &bytes.Buffer{}); !has(err,
+	if err := unstick(unborn(t), cfg, &bytes.Buffer{}); !has(err,
 		"no branch to name") {
 		t.Errorf("no branch: %v", err)
 	}
 	gone := cfgFor(t, "ada", t.TempDir(), "")
-	if err := unstickTo(one, gone, &bytes.Buffer{}); err == nil {
+	if err := unstick(one, gone, &bytes.Buffer{}); err == nil {
 		t.Error("unstuck against a road it could not read")
 	}
-	if err := unstickTo(one, cfg, &bytes.Buffer{}); !has(err,
+	if err := unstick(one, cfg, &bytes.Buffer{}); !has(err,
 		"not stuck") {
 		t.Errorf("no claim: %v", err)
 	}
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatal(err)
 	}
-	if err := doSticky(two, cfg); err != nil {
+	if err := follow(two, cfg, quiet); err != nil {
 		t.Fatal(err)
 	}
 	commitFile(t, one, "more.txt", "more\n", "more")
 	if _, err := one.Git("push", "-q", road, "work"); err != nil {
 		t.Fatal(err)
 	}
-	if err := unstickTo(two, cfg, &bytes.Buffer{}); !has(err,
+	if err := unstick(two, cfg, &bytes.Buffer{}); !has(err,
 		"pull or build first") {
 		t.Errorf("work not taken: %v", err)
 	}
 	var out bytes.Buffer
-	if err := unstickTo(one, cfg, &out); err != nil {
+	if err := unstick(one, cfg, &out); err != nil {
 		t.Fatal(err)
 	}
 	tip := gitAt(t, one.Dir(), "rev-parse", "HEAD")
@@ -161,7 +161,7 @@ func TestUnstickSaysWhatItDidOrWhyNot(t *testing.T) {
 	if out.String() != want {
 		t.Errorf("said %q, want %q", out.String(), want)
 	}
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -172,11 +172,11 @@ func TestUnstickLeavesTheClaimWhenTheRoadRefuses(t *testing.T) {
 	t.Parallel()
 	one, _, road, _ := stickyFixture(t)
 	cfg := cfgFor(t, "ada", road, "")
-	if err := doStick(one, cfg); err != nil {
+	if err := stick(one, cfg, quiet); err != nil {
 		t.Fatal(err)
 	}
 	gone := cfgFor(t, "ada", t.TempDir(), "")
-	if err := unstickTo(one, gone, &bytes.Buffer{}); err == nil ||
+	if err := unstick(one, gone, &bytes.Buffer{}); err == nil ||
 		has(err, "unstuck here") {
 		t.Errorf("unstuck against a road it could not read: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestUnstickLeavesTheClaimWhenTheRoadRefuses(t *testing.T) {
 		t.Errorf("the claim went with a road it could not read: %v", err)
 	}
 	refusing(t, road)
-	if err := unstickTo(one, cfg, &bytes.Buffer{}); !has(err,
+	if err := unstick(one, cfg, &bytes.Buffer{}); !has(err,
 		"unstuck here, but the road still carries the claim") {
 		t.Errorf("a road that refuses: %v", err)
 	}
@@ -233,11 +233,11 @@ func TestPushRoadSaysWhereAndRefusesWhatItMust(t *testing.T) {
 	t.Parallel()
 	one, _, road, _ := stickyFixture(t)
 	var out bytes.Buffer
-	if err := pushRoadTo(one, cfgFor(t, "ada", road, ""), &out); err != nil ||
+	if err := pushRoad(one, cfgFor(t, "ada", road, ""), &out); err != nil ||
 		out.String() != "pushed work to the road, "+road+"\n" {
 		t.Errorf("%v, said %q", err, out.String())
 	}
-	if err := pushRoadTo(one, cfgFor(t, "ada", road, road),
+	if err := pushRoad(one, cfgFor(t, "ada", road, road),
 		&bytes.Buffer{}); !has(err, "are the same remote") {
 		t.Errorf("road is dist: %v", err)
 	}
@@ -249,13 +249,13 @@ func TestPushRoadSaysWhereAndRefusesWhatItMust(t *testing.T) {
 	}
 	gitAt(t, one.Dir(), "config", "core.hooksPath", hooks)
 	out.Reset()
-	if err := pushRoadTo(one, cfgFor(t, "ada", road, "d.git"),
+	if err := pushRoad(one, cfgFor(t, "ada", road, "d.git"),
 		&out); err == nil || out.String() != "" {
 		t.Errorf("unguarded: %v, said %q", err, out.String())
 	}
 	gitAt(t, one.Dir(), "config", "--unset", "core.hooksPath")
 	gitAt(t, one.Dir(), "checkout", "-q", "--detach")
-	if err := pushRoadTo(one, cfgFor(t, "ada", road, ""),
+	if err := pushRoad(one, cfgFor(t, "ada", road, ""),
 		&bytes.Buffer{}); !has(err, "not on a branch") {
 		t.Errorf("detached: %v", err)
 	}

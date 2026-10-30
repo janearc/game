@@ -1,5 +1,62 @@
 # changelog
 
+## v0.4.2
+
+- moved all the non-golang targets out to `dismay`
+- refactored after updating pzm to v0.1.2
+- pzm reads the grammar of `~/.config/game/config` and `.game` into a type
+  game declares. game keeps what the lines mean. a file with bad lines is
+  refused whole, every line named as `file:line: key: why`.
+- the words on a line are counted before game reads them, so a line with
+  too few is refused in pzm's words: `stack: this key takes 2 to 3 words,
+  and this line has 1`.
+- what game used to take and pzm refuses: an upper case key, where game
+  lowercased it; and `key=value` with no spaces, which is one word and no
+  key (`key = value` still reads).
+- also refused: a block indented with tabs on one line and spaces on the
+  next; `author`, `license`, `words`, `name` or `rapid` said twice in one
+  file, and `road` or `dist` twice in one block.
+- also refused: a directory with a space in it on a `target` or `run`
+  line; `::` without a space on each side; a `name` or `project` of more
+  than one word.
+
+- the C, Objective-C, Swift and Xcode verbs are gone from game and are now
+  in dismay: `build-c`, `build-xcode`, `fuzz`, `race`, `mutants mutate-c`,
+  `mutate-xcode` and `mutate-text`, `cover c` and `cover xcode`, `aslr c` and
+  `aslr xcode`, `leaks c` and `leaks xcode`, `harden xcode`.
+
+- so are the Mach-O, semgrep and native-source layers of `harden`, the
+  flags only those verbs took, and the native source rules of `lint harden`.
+  game's Go modes stay: bare `cover`, `aslr go`, `leaks go`, and `harden`
+  over Go source and modules.
+
+- `cover N` in your config is a coverage floor for every project. `game
+  check` measures each Go package after the tests, the way `game cover`
+  does, and fails one under the floor, naming it, its percentage and its
+  first uncovered lines.
+- a project's `.game` may say `cover M` with M at least N. a lower M is
+  refused, naming both numbers and both files. with no `cover` line
+  anywhere there is no floor.
+- files with the "Code generated ... DO NOT EDIT." header, and packages
+  with no statements, are left out of the floor.
+- `cover allow FILE REASON` in a `.game` leaves one file out of the floor.
+  the reason is required. `game check` prints every allowed file and its
+  reason on every run.
+- `game cover --html` writes the html report and prints its path.
+- `game sweep -- --help` no longer hands `--help` to git log: a revision
+  that begins with a hyphen is refused. `game sweep --help` prints sweep's
+  own help on pzm; a game built before pzm passed it to git log.
+- `version` and `help-claude` are gone. `game --age` says which commit this
+  is, `game --who` who built it and `game --agent-help` how to use it.
+- a flag is declared once and pzm parses it. an unknown flag, a missing
+  value, a flag given twice or a list with an empty item is refused by pzm,
+  with exit 2 and nothing run.
+- `--with` is one flag with commas: `--with a,b`. giving it twice is refused.
+- `build` refuses `--from`, `--parallel` and `--here` unless it is
+  `build stack`. `release` refuses a flag its form does not take.
+- a config that cannot be read, or a missing setting, exits 1 as any verb
+  that failed does. no word at all prints the help and exits 0.
+
 ## v0.4.1, 2026-10-27
 
 this is an interim release on the way to v0.5.0.
@@ -28,8 +85,8 @@ new verbs:
   the exit code is nonzero.
 - --timeout under twice the time of the unchanged suite is refused. the
   message gives a timeout to use.
-- the copies of the tree go in $TMPDIR, or in the user cache folder when
-  $TMPDIR is under /var/folders. Xcode does not measure coverage there.
+- the copies of the tree go in `$TMPDIR`, or in the user cache folder when
+  `$TMPDIR` is under /var/folders. Xcode does not measure coverage there.
 - mutants mutate-c, mutate-xcode and mutate-text reach C, Swift and any other
   file. they call Mull, Muter and universalmutator. each must be installed.
 - build-c builds C sources into bin/ with cc. the result is signed ad hoc for

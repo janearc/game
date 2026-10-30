@@ -63,7 +63,7 @@ type builds struct {
 func (builds builds) binary(dir string) []byte {
 	builds.t.Helper()
 	os.RemoveAll(filepath.Join(dir, "bin"))
-	if err := buildBinariesBy(repoAt(dir), builds.cfg,
+	if err := buildBinaries(repoAt(dir), builds.cfg,
 		"jm/4b732342 on loft", run, io.Discard, false); err != nil {
 		builds.t.Fatalf("build in %s: %v", dir, err)
 	}

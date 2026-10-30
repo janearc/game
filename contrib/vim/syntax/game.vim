@@ -10,7 +10,7 @@ endif
 " marks one red first. everything below that knows the word wins.
 syn match gameUnknown "^\s*\S\+"
 
-syn match gameKey "^\(author\|words\|name\|exclude\|omit\|sweep\|lint\|target\|run\|needs\|set\|stack\|patches\|license\|rapid\)\>"
+syn match gameKey "^\(author\|words\|name\|exclude\|omit\|sweep\|lint\|target\|run\|needs\|set\|stack\|patches\|license\|rapid\|cover\)\>"
 syn match gameProject "^project\>" nextgroup=gameProjectName skipwhite
 syn match gameProjectName "\S\+" contained
 syn match gameBlockKey "^\s\+\(road\|set\)\>"

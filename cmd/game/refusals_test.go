@@ -40,14 +40,14 @@ func unguardable(t *testing.T, clone repo.Repo) {
 // no time, or a time but says dev, cannot say what it is.
 func TestAStampNeedsBothItsCommitAndItsTime(t *testing.T) {
 	t.Parallel()
-	for _, half := range []stamp{
-		{commit: "abc1234"}, {commit: "dev", at: made.at},
+	for _, half := range [][2]string{
+		{"abc1234", ""}, {devCommit, testBuilt},
 	} {
-		if err := half.stamped(); !refused(err, "built by go") {
+		if err := needStamp(half[0], half[1]); !refused(err, "built by go") {
 			t.Errorf("%+v: %v, want the provenance refusal", half, err)
 		}
 	}
-	if err := made.stamped(); err != nil {
+	if err := needStamp(testCommit, testBuilt); err != nil {
 		t.Errorf("a whole stamp: %v", err)
 	}
 }
@@ -70,7 +70,7 @@ func TestReleaseVerbReadsItsWordsFirst(t *testing.T) {
 		{[]string{"push", "v1"}, "built by go"},
 		{[]string{"stack", "v1"}, "built by go"},
 	} {
-		if err := releaseVerb(one, cfg, words.args); !refused(err,
+		if err := viaPzm(t, "release", releaseVerb, one, cfg, words.args); !refused(err,
 			words.want) {
 			t.Errorf("release %q: %v, want %q", words.args, err,
 				words.want)
@@ -120,11 +120,11 @@ func setRemoteUnsaid(_ *testing.T, _ repo.Repo, spec *gateSpec) {
 }
 
 // prepareGate is one gate in front of the cut: what to change, the
-// stamp, and the words of the refusal.
+// stamp (dev is a game built by go), and the words of the refusal.
 type prepareGate struct {
 	name string
 	set  gateSet
-	made stamp
+	dev  bool
 	want string
 }
 
@@ -138,7 +138,8 @@ func (gate prepareGate) check(t *testing.T) {
 		gate.set(t, one, &spec)
 	}
 	cfg := cfgWith(t, "ada", spec.road, spec.dist, spec.game...)
-	err := releasePrepare(one, cfg, "v1", false, io.Discard, gate.made)
+	commit, at := stampOf(gate.dev)
+	err := releasePrepare(one, cfg, "v1", false, io.Discard, commit, at)
 	if !refused(err, gate.want) {
 		t.Errorf("%v, want %q", err, gate.want)
 	}
@@ -153,13 +154,13 @@ func (gate prepareGate) check(t *testing.T) {
 func TestReleasePrepareRefusesBeforeItCuts(t *testing.T) {
 	t.Parallel()
 	gates := []prepareGate{
-		{"unstamped", nil, unstamped, "built by go"},
-		{"stuck unreadably", setStuckUnreadably, made,
+		{"unstamped", nil, true, "built by go"},
+		{"stuck unreadably", setStuckUnreadably, false,
 			".sticky: is a directory"},
-		{"no dist", setNoDist, made, "has no dist"},
-		{"no guard", setNoGuard, made, "a.txt: not a directory"},
-		{"a setting not set", setNeeding, made, "set the needed settings"},
-		{"a never-word", setNeverWord, made, "a never-word in b.txt"},
+		{"no dist", setNoDist, false, "has no dist"},
+		{"no guard", setNoGuard, false, "a.txt: not a directory"},
+		{"a setting not set", setNeeding, false, "set the needed settings"},
+		{"a never-word", setNeverWord, false, "a never-word in b.txt"},
 	}
 	for _, gate := range gates {
 		t.Run(gate.name, gate.check)
@@ -172,7 +173,7 @@ type pushGate struct {
 	name    string
 	set     gateSet
 	prepare bool
-	made    stamp
+	dev     bool
 	want    string
 }
 
@@ -184,7 +185,7 @@ func (gate pushGate) check(t *testing.T) {
 	cfg := cfgFor(t, "ada", road, dist)
 	if gate.prepare {
 		if err := releasePrepare(one, cfg, "v1", false,
-			io.Discard, made); err != nil {
+			io.Discard, testCommit, testBuilt); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -193,7 +194,8 @@ func (gate pushGate) check(t *testing.T) {
 		gate.set(t, one, &spec)
 	}
 	cfg = cfgWith(t, "ada", spec.road, spec.dist, spec.game...)
-	err := releasePush(one, cfg, "v1", false, io.Discard, gate.made)
+	commit, at := stampOf(gate.dev)
+	err := releasePush(one, cfg, "v1", false, io.Discard, commit, at)
 	if !refused(err, gate.want) {
 		t.Errorf("%v, want %q", err, gate.want)
 	}
@@ -207,14 +209,14 @@ func (gate pushGate) check(t *testing.T) {
 func TestReleasePushRefusesBeforeItSends(t *testing.T) {
 	t.Parallel()
 	gates := []pushGate{
-		{"stuck unreadably", setStuckUnreadably, false, made,
+		{"stuck unreadably", setStuckUnreadably, false, false,
 			".sticky: is a directory"},
-		{"no dist", setNoDist, false, made, "has no dist"},
-		{"no guard", setNoGuard, true, made, "a.txt: not a directory"},
-		{"unstamped", nil, true, unstamped, "built by go"},
-		{"a remote, unsaid", setRemoteUnsaid, false, made,
+		{"no dist", setNoDist, false, false, "has no dist"},
+		{"no guard", setNoGuard, true, false, "a.txt: not a directory"},
+		{"unstamped", nil, true, true, "built by go"},
+		{"a remote, unsaid", setRemoteUnsaid, false, false,
 			"wants the word"},
-		{"nothing prepared", nil, false, made, "no prepared release v1"},
+		{"nothing prepared", nil, false, false, "no prepared release v1"},
 	}
 	for _, gate := range gates {
 		t.Run(gate.name, gate.check)
@@ -229,10 +231,11 @@ func TestAReleaseSaysWhatItPreparedAndSent(t *testing.T) {
 	cfg := cfgFor(t, "ada", road, dist)
 	var said bytes.Buffer
 	if err := releasePrepare(one, cfg, "v1", false, &said,
-		made); err != nil {
+		testCommit, testBuilt); err != nil {
 		t.Fatal(err)
 	}
-	if err := releasePush(one, cfg, "v1", false, &said, made); err != nil {
+	if err := releasePush(one, cfg, "v1", false, &said, testCommit,
+		testBuilt); err != nil {
 		t.Fatal(err)
 	}
 	main, err := one.RemoteMain(dist)
@@ -297,13 +300,13 @@ func setRewrittenPath(t *testing.T, clone repo.Repo, spec *gateSpec) {
 func TestReleasePushWantsTheWordForEveryWayToLeave(t *testing.T) {
 	t.Parallel()
 	gates := []pushGate{
-		{"host and path", setHostAndPath, false, made, "wants the word"},
-		{"ftp", setFtp, false, made, "wants the word"},
-		{"transport helper", setTransportHelper, false, made,
+		{"host and path", setHostAndPath, false, false, "wants the word"},
+		{"ftp", setFtp, false, false, "wants the word"},
+		{"transport helper", setTransportHelper, false, false,
 			"wants the word"},
-		{"a remote named far", setNamedFarRemote, false, made,
+		{"a remote named far", setNamedFarRemote, false, false,
 			"wants the word"},
-		{"a rewritten path", setRewrittenPath, false, made,
+		{"a rewritten path", setRewrittenPath, false, false,
 			"wants the word"},
 	}
 	for _, gate := range gates {

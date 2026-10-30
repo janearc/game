@@ -37,7 +37,7 @@ func TestCheckAsksGofmtVetAndTestsInTurn(t *testing.T) {
 			"no: root: go test"},
 	} {
 		var out bytes.Buffer
-		err := checkBy(cleaned(t, "root", module), blankConfig(),
+		err := check(cleaned(t, "root", module), blankConfig(),
 			each.stand.run, &out)
 		if each.err == "" && err != nil ||
 			each.err != "" && (err == nil ||
@@ -55,7 +55,7 @@ func TestCheckAsksGofmtVetAndTestsInTurn(t *testing.T) {
 	}
 	stand := &asked{}
 	var out bytes.Buffer
-	if err := checkBy(cleaned(t, "root", nil), blankConfig(),
+	if err := check(cleaned(t, "root", nil), blankConfig(),
 		stand.run, &out); err != nil || stand.said != nil ||
 		!strings.HasPrefix(out.String(), "check: no go.mod,") {
 		t.Errorf("no module: %v, asked %q, said %q", err, stand.said,

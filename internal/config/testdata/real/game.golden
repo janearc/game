@@ -1,0 +1,30 @@
+author: ""
+words: ""
+license: ""
+exclude: []
+omit: []
+patches: []
+theirs: []
+rapid: "1000"
+cover floor: "0"
+cover allowed: []
+set: []
+road: []
+dist: []
+stack: ["puzzlemouth" "main"]
+stack: ["libninja" "main"]
+stack: ["okapi" "main"]
+lint: ["width" "80"]
+lint: ["rows" "25"]
+lint: ["comments"]
+lint: ["print"]
+lint: ["exclaim"]
+lint: ["shout"]
+lint: ["words" "hyperscaler" "enterprise-grade" "blazing-fast" "load-bearing"]
+lint: ["paragraph" "4"]
+lint: ["allow" "README.md" "rows" "exclaim"]
+lint: ["allow" "doc/getting-started.md" "paragraph" "exclaim" "words"]
+target: ["mocks" "." "go" "run" "go.uber.org/mock/mockgen@v0.6.0" "-destination" "internal/patch/paths_mock_test.go" "-package" "patch_test" "github.com/janearc/game/internal/patch" "Paths"]
+target: ["mocks" "." "go" "run" "go.uber.org/mock/mockgen@v0.6.0" "-destination" "internal/mutants/files_mock_test.go" "-package" "mutants_test" "github.com/janearc/game/internal/mutants" "Files"]
+target: ["mocks" "." "go" "run" "go.uber.org/mock/mockgen@v0.6.0" "-destination" "internal/release/temp_files_mock_test.go" "-package" "release_test" "github.com/janearc/game/internal/release" "TempFiles,PatchFile"]
+target: ["mocks" "." "go" "run" "go.uber.org/mock/mockgen@v0.6.0" "-destination" "internal/repo/runner_mock_test.go" "-package" "repo_test" "github.com/janearc/game/internal/repo" "Runner"]

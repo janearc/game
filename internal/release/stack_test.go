@@ -272,7 +272,7 @@ func TestStackRefusesBeforeItTouchesAnything(t *testing.T) {
 // given, by name, in name order.
 func stackOfModules(
 	t *testing.T, mods map[string]string,
-) (release.Stacked, error) {
+) (*release.Stacked, error) {
 	t.Helper()
 	root := t.TempDir()
 	own := filepath.Join(root, "own")

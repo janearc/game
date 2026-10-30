@@ -1,0 +1,33 @@
+author: "Ada"
+words: "/srv/ada/lists/sweep.words"
+license: "/srv/ada/licenses/apache.txt"
+exclude: ["spec-docs/" "internal/bridge/" "vendor/"]
+omit: ["scratch/" "dist/"]
+patches: ["shared/patches" "other/patches"]
+theirs: ["crush"]
+rapid: "1000"
+cover floor: "90"
+cover allowed: ["cmd/thing/main.go=needs a real terminal"]
+set: ["CONTACT=ada@example.com" "TOKEN=two words here"]
+road: ["alpha=/srv/ada/roots/alpha-road.git" "beta=../beta.git"]
+dist: ["alpha=https://example.invalid/alpha.git"]
+stack: ["puzzlemouth" "main"]
+stack: ["crush" "v0.98.1"]
+lint: ["width" "80"]
+lint: ["rows" "25"]
+lint: ["comments"]
+lint: ["words" "foo" "bar"]
+lint: ["allow" "README.md" "rows"]
+lint: ["width" "72"]
+lint: ["allow" "a.md" "width"]
+lint: ["allow" "b.md" "rows" "paragraph"]
+needs: ["CONTACT" "a name and email the providers can reach"]
+needs: ["REGION" "where it runs"]
+run: ["ghostty" "." "open" "-na" "build/app/T.app" "--args" "-e" "bin/daffy"]
+run: ["known" "." "go" "run" "./cmd/thing" "known"]
+target: ["ghostty" "." "sh" "tools/toolchain"]
+target: ["ghostty" "/srv/ada/src/g" "/srv/ada/zig" "build" "-Doptimize=ReleaseFast"]
+target: ["mocks" "." "go" "run" "example.invalid/mockgen" "-destination" "x.go"]
+target: ["mocks" "/srv/ada/there" "/srv/ada/bin/step" "two"]
+target: ["quick" "" "go" "build"]
+sweep: ["README.md" "emails" "author" "word"]

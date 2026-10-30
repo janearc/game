@@ -80,31 +80,10 @@ func Kind(output string) string {
 	return "deterministic"
 }
 
-// Fixer is the seam where an agent repairs a deterministic failure. it is
-// given the member that failed, its directory, the failed step and what
-// the step said, and returns the name of a branch holding a fix, or an
-// empty name to give up.
-type Fixer interface {
-	Fix(ctx context.Context, member Member, dir, step, text string) (
-		branch string, err error)
-}
-
-// giveUp is the Fixer that fixes nothing, the only one game ships.
-type giveUp struct{}
-
-// Fix gives up.
-func (giveUp) Fix(context.Context, Member, string, string, string) (
-	string, error) {
-	return "", nil
-}
-
-// GivingUp is the Fixer that fixes nothing, the only one game ships.
-func GivingUp() Fixer { return giveUp{} }
-
 // Row is one member's outcome, for the table.
 type Row struct {
 	member Member
-	result string // ok, flaky, failed, or fixed on a named branch
+	result string // ok, flaky, or failed
 	failed string // the step that failed, when one did
 	lint   int
 	tries  int
@@ -113,8 +92,7 @@ type Row struct {
 // Name is the member's name.
 func (row Row) Name() string { return row.member.name }
 
-// Result is how the member came out: ok, flaky, failed, or fixed on a
-// named branch.
+// Result is how the member came out: ok, flaky, or failed.
 func (row Row) Result() string { return row.result }
 
 // Lint is how many findings the member's lint counted.
@@ -136,7 +114,6 @@ type Options struct {
 	// clear is whether the screen is cleared before a card: a terminal is.
 	clear bool
 	tries int // attempts at a transient failure, clone or build
-	fixer Fixer
 	out   io.Writer
 	// sleep waits and jitter is a random wait below a ceiling, for
 	// backoff: the caller owns the clock and the dice.
@@ -203,12 +180,6 @@ func (asked Options) Jittered(jitter func(ceiling int64) int64) Options {
 	return asked
 }
 
-// Fixing is the options offering fixes with the fixer given.
-func (asked Options) Fixing(fixer Fixer) Options {
-	asked.fixer = fixer
-	return asked
-}
-
 // oneAtATime is the fewest members built at once, and the count at
 // which the first failure stops the run: defined so.
 const oneAtATime = 1
@@ -242,10 +213,9 @@ const folderMode = 0o755
 // failed row. the error is only for a stack that could not start.
 func Run(ctx context.Context, asked Options) ([]Row, error) {
 	asked = asked.settled()
-	if asked.sleep == nil || asked.jitter == nil || asked.fixer == nil {
-		return nil, errors.New("a stack build is given Sleeping, " +
-			"Jittered and Fixing: the caller owns the clock, " +
-			"the dice and the fixes")
+	if asked.sleep == nil || asked.jitter == nil {
+		return nil, errors.New("a stack build is given Sleeping and " +
+			"Jittered: the caller owns the clock and the dice")
 	}
 	if err := os.MkdirAll(asked.work, folderMode); err != nil {
 		return nil, err
@@ -397,43 +367,42 @@ func (said voice) say(format string, args ...any) {
 }
 
 // placed puts a member under its name. with no remote it must already be
-// there, else it is cloned at its ref. it returns the url used and false if
-// the member could not be placed, with the row saying why.
+// there, else it is cloned at its ref. it returns false if the member
+// could not be placed, with the row saying why.
 func (asked Options) placed(
 	member Member,
 	dir string,
 	row *Row,
 	said voice,
-) (string, bool) {
+) bool {
 	if asked.url == nil {
 		// no remote to ask, so the member must already be here with a
 		// .game. one with no go.mod is checked by its own test target.
 		if _, err := os.Stat(filepath.Join(dir, ".game")); err != nil {
 			row.result, row.failed = "failed", "here"
-			return "", false
+			return false
 		}
 		said.say("in place")
-		return "", true
+		return true
 	}
 	found, err := asked.url(member.name)
 	if err != nil {
 		row.result, row.failed = "failed", "remote"
-		return "", false
+		return false
 	}
 	if err := asked.clone(found, member.ref, dir, said); err != nil {
 		row.result, row.failed = "failed", "clone"
-		return "", false
+		return false
 	}
 	if err := asked.lay(member, dir, said); err != nil {
 		row.result, row.failed = "failed", "patch"
-		return "", false
+		return false
 	}
-	return found, true
+	return true
 }
 
 // member places one member and builds it. a failed test is run again to
-// tell flaky from failing, and a failure the fixer can mend is built again
-// from the branch it names.
+// tell flaky from failing.
 func (asked Options) member(
 	ctx context.Context,
 	member Member,
@@ -442,7 +411,7 @@ func (asked Options) member(
 	row := Row{member: member}
 	said := voice{out: asked.out, name: member.name, mu: mu}
 	dir := filepath.Join(asked.work, member.name)
-	url, ok := asked.placed(member, dir, &row, said)
+	ok := asked.placed(member, dir, &row, said)
 	if !ok {
 		return row
 	}
@@ -461,36 +430,7 @@ func (asked Options) member(
 		}
 	}
 	row.result, row.failed = "failed", ev.Step
-	asked.mend(ctx, member, dir, url, ev, &row, said)
 	return row
-}
-
-// mend offers a deterministic failure to the fixer. a branch it names is
-// cloned beside the member and built, and the row says so if that passes.
-// with no remote there is nowhere a fix could come from.
-func (asked Options) mend(
-	ctx context.Context,
-	member Member,
-	dir, url string,
-	ev Event,
-	row *Row,
-	said voice,
-) {
-	branch, err := asked.fixer.Fix(ctx, member, dir, ev.Step, ev.Text)
-	if err != nil || branch == "" || url == "" {
-		return
-	}
-	said.say("a fix is offered on %s; building it", branch)
-	fixed := filepath.Join(asked.work, member.name+"-fix")
-	if err := asked.clone(url, branch, fixed, said); err != nil {
-		return
-	}
-	if err := asked.lay(member, fixed, said); err != nil {
-		return
-	}
-	if _, ok := asked.build(ctx, fixed, row, said); ok {
-		row.result = "fixed on " + branch
-	}
 }
 
 // lay lays the member's patches on its fresh clone at dir, when the
@@ -727,28 +667,23 @@ func notStarted(err error) Event {
 	return Event{Step: "start", State: "fail", Text: err.Error()}
 }
 
+// Clone checks ref of the repository at url out into dir, shallow, once.
+// when git refuses it returns what git said, and the error.
+func Clone(url, ref, dir string) (string, error) {
+	said, err := exec.Command("git", "clone", "--quiet", "--depth", "1",
+		"--branch", ref, url, dir).CombinedOutput()
+	return strings.TrimSpace(string(said)), err
+}
+
 // clone checks ref out into dir, removing dir first. it retries with backoff.
 func (asked Options) clone(url, ref, dir string, said voice) error {
 	var err error
 	for attempt := count.First; attempt < asked.tries; attempt++ {
 		os.RemoveAll(dir)
-		cmd := exec.Command(
-			"git",
-			"clone",
-			"--quiet",
-			"--depth",
-			"1",
-			"--branch",
-			ref,
-			url,
-			dir,
-		)
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		if err = cmd.Run(); err == nil {
+		why, cloneErr := Clone(url, ref, dir)
+		if cloneErr == nil {
 			return nil
 		}
-		why := strings.TrimSpace(stderr.String())
 		err = fmt.Errorf("clone %s at %s: %s", url, ref, why)
 		// no wait after the last try: nothing comes after it
 		if attempt == count.Last(asked.tries) {
@@ -794,7 +729,7 @@ func Table(out io.Writer, rows []Row) {
 	)
 	for _, row := range rows {
 		result := row.result
-		if row.failed != "" && !strings.HasPrefix(result, "fixed") {
+		if row.failed != "" {
 			result += " at " + row.failed
 		}
 		fmt.Fprintf(

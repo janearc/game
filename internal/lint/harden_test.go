@@ -3,7 +3,6 @@ package lint_test
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -74,41 +73,6 @@ var hardenedGoCases = []struct{ name, body, want string }{
 		"tls.Config skips the certificate check"},
 }
 
-// hardenedNativeCases are the C, Objective-C and Swift sources the
-// harden rule is asked about.
-var hardenedNativeCases = []struct{ name, body, want string }{
-	{"setuid.c", "void f(void) { setuid(0); }\n",
-		"setuid gives the process privileges"},
-	{"chown.c", "void f(void) { chown(\"x\", -1, 0); }\n",
-		"chown moves a file to another owner"},
-	{"sudo.c", "#include <stdlib.h>\nvoid f(void) { system(\"sudo x\"); }\n",
-		"runs a command as another user"},
-	{"exec.c", "#include <unistd.h>\n" +
-		"void f(void) { execl(\"/usr/bin/sudo\", \"sudo\", NULL); }\n",
-		"runs a command as another user"},
-	{"chmod.c", "#include <sys/stat.h>\n" +
-		"void f(void) { chmod(\"x\", 04755); }\n",
-		"chmod sets the setuid or setgid bit"},
-	{"open.c", "#include <fcntl.h>\n" +
-		"void f(void) { open(\"x\", O_CREAT, 0666); }\n",
-		"lets someone other than the owner write"},
-	{"mkdir.c", "#include <sys/stat.h>\n" +
-		"void f(void) { mkdir(\"x\", 0777); }\n",
-		"lets someone other than the owner write"},
-	{"setuid.m", "void f(void) { setgid(0); }\n",
-		"setgid gives the process privileges"},
-	{"root.m", "CFReadStreamSetProperty(r, " +
-		"kCFStreamSSLAllowsAnyRoot, kCFBooleanTrue);\n",
-		"accepts any certificate any root signs"},
-	{"perm.swift", "FileManager.default.createFile(atPath: p, " +
-		"contents: d, attributes: [.posixPermissions: 0o666])\n",
-		"lets someone other than the owner write"},
-	{"proc.swift", "task.launchPath = \"/usr/bin/sudo\"\n",
-		"runs a command as another user"},
-	{"setuid.swift", "func f() { setuid(0) }\n",
-		"setuid gives the process privileges"},
-}
-
 // holds says whether a finding for file carries text.
 func holds(found []lint.Finding, file, text string) bool {
 	for _, finding := range found {
@@ -172,58 +136,25 @@ func TestHardenedFindsEachPattern(t *testing.T) {
 		[]string{"clean.go", "own.go", "skipped_test.go"})
 }
 
-// the harden rule reads C, Objective-C and Swift for the same things:
-// privilege a process might raise, files opened too widely, and a check
-// skipped. clean neighbours and comments are left alone.
-func TestHardenedFindsNativePatterns(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	for _, each := range hardenedNativeCases {
-		writeGo(t, dir, each.name, each.body)
-	}
-	writeGo(t, dir, "clean.c",
-		"void f(void) { open(\"x\", O_CREAT, 0644); "+
-			"mkdir(\"x\", 0755); }\n")
-	writeGo(t, dir, "clean.swift",
-		"FileManager.default.createFile(atPath: p, contents: d, "+
-			"attributes: [.posixPermissions: 0o644])\n")
-	writeGo(t, dir, "comment.c", "// setuid(0) is not a call here\n")
-	writeGo(t, dir, "directive.m", "#define setuid(x) evil(x)\n")
-
-	found, err := lint.Hardened(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkHeld(t, found, hardenedNativeCases,
-		[]string{"clean.c", "clean.swift", "comment.c", "directive.m"})
-}
-
-// lint harden in a .game holds the native sources too, as game harden
-// does, so the lint gate and the verb agree; without it they are of no
-// kind to lint at all.
-func TestRunWithHardenReadsNativeSources(t *testing.T) {
+// source that is not Go is of no kind to the harden rule, whether it is
+// asked by game harden or by lint harden in a .game.
+func TestHardenLeavesOtherLanguagesAlone(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeGo(t, dir, "setuid.c", "void f(void) { setuid(0); }\n")
+	writeGo(t, dir, "setuid.swift", "func f() { setuid(0) }\n")
 	writeGo(t, dir, "a.go", "package a\n")
-	hardened := described(t, config.Ruled("harden"))
-	found, err := hardened.Run(dir)
-	if err != nil {
-		t.Fatal(err)
+	found, err := lint.Hardened(dir)
+	if err != nil || len(found) != 0 {
+		t.Errorf("game harden: %v, %v", found, err)
 	}
-	if !holds(found, "setuid.c", "setuid gives the process privileges") {
-		t.Errorf("no native finding in %v", found)
-	}
-	width := int(held(t, "lint-width"))
-	rule := strconv.Itoa(width)
-	plain := described(t, config.Ruled("width", rule))
-	found, err = plain.Run(dir)
+	found, err = described(t, config.Ruled("harden")).Run(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, finding := range found {
-		if finding.File() == "setuid.c" {
-			t.Errorf("read without harden: %v", finding)
+		if finding.Rule() == "harden" {
+			t.Errorf("read without a Go file: %v", finding)
 		}
 	}
 }

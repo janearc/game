@@ -23,13 +23,13 @@ func TestPlayGivesEachEndItsCode(t *testing.T) {
 		args []string
 		want int
 	}{
-		{nil, exitUsage},
+		{nil, exitOK},
 		{[]string{"no-such-verb"}, exitUsage},
 		{[]string{"stick", "--help"}, exitOK},
 		{[]string{"stick", "a-word"}, exitFailed},
-		{[]string{"version"}, exitOK},
+		{[]string{"--age"}, exitOK},
 	} {
-		if got := play(words.args, dir, whose, home); got != words.want {
+		if got := playPzm(words.args, dir, whose, home); got != words.want {
 			t.Errorf("game %q: exit %d, want %d", words.args, got,
 				words.want)
 		}
@@ -110,21 +110,21 @@ func TestArtForPrefersTheProjectsOwn(t *testing.T) {
 }
 
 // TestPlayRefusesWhatItCannotStartOn: a config that cannot be read, and
-// a build missing a setting the repository needs, are each 2.
+// a build missing a setting the repository needs, are each 1: pzm's code for a verb that failed.
 func TestPlayRefusesWhatItCannotStartOn(t *testing.T) {
 	t.Parallel()
 	unreadable := t.TempDir()
 	write(t, filepath.Join(unreadable, ".config", "game", "config", "x"),
 		"a directory where the config goes")
-	if got := play([]string{"version"}, t.TempDir(), unreadable,
-		t.TempDir()); got != exitUsage {
-		t.Errorf("an unreadable config: exit %d, want %d", got, exitUsage)
+	if got := playPzm([]string{"check"}, t.TempDir(), unreadable,
+		t.TempDir()); got != exitFailed {
+		t.Errorf("an unreadable config: exit %d, want %d", got, exitFailed)
 	}
 	needy := t.TempDir()
 	write(t, filepath.Join(needy, ".game"), "needs TOKEN a test\n")
-	if got := play([]string{"build"}, needy, t.TempDir(),
-		t.TempDir()); got != exitUsage {
-		t.Errorf("a build missing TOKEN: exit %d, want %d", got, exitUsage)
+	if got := playPzm([]string{"build"}, needy, t.TempDir(),
+		t.TempDir()); got != exitFailed {
+		t.Errorf("a build missing TOKEN: exit %d, want %d", got, exitFailed)
 	}
 }
 
@@ -205,14 +205,14 @@ func TestPaintedPaintsNothingWhereNoTerminalIs(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "art", "header.ansi"), "art\n")
-	if painted(dir, "p") {
+	if painted(quiet, dir, "p") {
 		t.Error("art was painted to a pipe")
 	}
 	var out bytes.Buffer
-	if !paintTo(&out, dir, "p") || out.String() != "art\n" {
+	if !paint(&out, dir, "p") || out.String() != "art\n" {
 		t.Errorf("paintTo wrote %q", out.String())
 	}
-	if paintTo(&out, t.TempDir(), "p") {
+	if paint(&out, t.TempDir(), "p") {
 		t.Error("paintTo found art where there was none")
 	}
 }
@@ -227,8 +227,8 @@ func TestMainRunsTheWordsAfterItsName(t *testing.T) {
 		args []string
 		want int
 	}{
-		{[]string{"version"}, exitOK},
-		{nil, exitUsage},
+		{[]string{"--age"}, exitOK},
+		{nil, exitOK},
 	} {
 		self, err := os.Executable()
 		if err != nil {
@@ -250,7 +250,14 @@ func TestMainRunsTheWordsAfterItsName(t *testing.T) {
 				words.want)
 		}
 		if words.want == exitOK && !regexp.MustCompile(`^game`).Match(out) {
-			t.Errorf("game version said %q", out)
+			t.Errorf("game --age said %q", out)
 		}
 	}
+}
+
+// playPzm runs game's words through pzm in dir, with the config of whose
+// and home, and says only the exit code.
+func playPzm(args []string, dir, whose, home string) int {
+	return runPzm(args, dir, whose, home, strings.NewReader(""),
+		io.Discard, io.Discard)
 }

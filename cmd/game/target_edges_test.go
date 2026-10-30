@@ -22,7 +22,7 @@ func TestBuildTargetRunsEachStepAndShowsTheTail(t *testing.T) {
 	second := scripted(t, "echo done")
 	cfg := gamed(t, "target two sub :: "+first, "target two :: "+second)
 	var out bytes.Buffer
-	if err := buildTargetTo(work, cfg, "two", &out); err != nil {
+	if err := buildTarget(work, cfg, "two", &out); err != nil {
 		t.Fatal(err)
 	}
 	logPath := work.Path("bin", "two.log")
@@ -54,7 +54,7 @@ func TestBuildTargetStopsAtAFailingStep(t *testing.T) {
 	never := scripted(t, "echo never")
 	cfg := gamed(t, "target bad :: "+fails, "target bad :: "+never)
 	var out bytes.Buffer
-	err := buildTargetTo(work, cfg, "bad", &out)
+	err := buildTarget(work, cfg, "bad", &out)
 	logPath := work.Path("bin", "bad.log")
 	if err == nil ||
 		!strings.HasPrefix(err.Error(), "build bad: step 1 failed after ") ||
@@ -79,7 +79,7 @@ func TestBuildTargetStopsAtAFailingStep(t *testing.T) {
 func TestBuildTargetRefusesWhatItCannotRun(t *testing.T) {
 	t.Parallel()
 	cfg := gamed(t, "target a :: true", "target b :: true")
-	err := buildTargetTo(cleaned(t, "root", nil), cfg, "x",
+	err := buildTarget(cleaned(t, "root", nil), cfg, "x",
 		&bytes.Buffer{})
 	if err == nil ||
 		err.Error() != `no target called "x"; described: a, b` {
@@ -87,7 +87,7 @@ func TestBuildTargetRefusesWhatItCannotRun(t *testing.T) {
 	}
 	work := cleaned(t, "root", map[string]string{"bin": "a file"})
 	var out bytes.Buffer
-	if err := buildTargetTo(work, cfg, "a", &out); err == nil ||
+	if err := buildTarget(work, cfg, "a", &out); err == nil ||
 		count.Positive(out.Len()) {
 		t.Errorf("no log: %v, said %q", err, out.String())
 	}

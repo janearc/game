@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +11,7 @@ import (
 // game harden reports a finding as a fix and fails with its count, the
 // tools standing in and saying nothing so the source alone is counted.
 func TestHardenReportsAndFails(t *testing.T) {
-	standTools(t, "semgrep")
+	standTools(t)
 	dir := t.TempDir()
 	openFile := os.FileMode(0o644)
 	if err := os.WriteFile(filepath.Join(dir, "a.go"),
@@ -20,9 +19,9 @@ func TestHardenReportsAndFails(t *testing.T) {
 			"func f(){ os.Chmod(\"x\", 04755) }\n"), openFile); err != nil {
 		t.Fatal(err)
 	}
-	stand := &asked{gives: map[string]string{"semgrep": `{"results":[]}`}}
+	stand := &asked{}
 	var out bytes.Buffer
-	err := hardenBy(dir, nil, stand.run, &out, &bytes.Buffer{})
+	err := argsHardenBy(t, dir, nil, stand.run, &out)
 	if err == nil || !strings.Contains(err.Error(), "1 to fix") {
 		t.Errorf("err %v", err)
 	}
@@ -34,38 +33,38 @@ func TestHardenReportsAndFails(t *testing.T) {
 // game harden with nothing to find says clean, and a tool not standing
 // is itself a finding rather than a pass.
 func TestHardenSaysClean(t *testing.T) {
-	standTools(t, "semgrep")
+	standTools(t)
 	dir := t.TempDir()
 	openFile := os.FileMode(0o644)
 	if err := os.WriteFile(filepath.Join(dir, "a.go"),
 		[]byte("package main\nfunc main() {}\n"), openFile); err != nil {
 		t.Fatal(err)
 	}
-	stand := &asked{gives: map[string]string{"semgrep": `{"results":[]}`}}
+	stand := &asked{}
 	var out bytes.Buffer
-	if err := hardenBy(dir, nil, stand.run, &out, &bytes.Buffer{}); err != nil {
+	if err := argsHardenBy(t, dir, nil, stand.run, &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "harden: clean\n" {
 		t.Errorf("said %q", out.String())
 	}
-	standTools(t)
+	write(t, filepath.Join(dir, "go.mod"), "module example.invalid/check\n")
 	out.Reset()
-	err := hardenBy(dir, nil, stand.run, &out, &bytes.Buffer{})
-	if err == nil || !strings.Contains(out.String(), "semgrep did not run") {
-		t.Errorf("semgrep out: %v, said %q", err, out.String())
+	err := argsHardenBy(t, dir, nil, stand.run, &out)
+	if err == nil || !strings.Contains(out.String(), "gosec did not run") {
+		t.Errorf("gosec out: %v, said %q", err, out.String())
 	}
 }
 
-// game harden is a verb, and refuses a word that is not xcode.
+// game harden is a verb, and takes no word.
 func TestHardenVerbIsRegistered(t *testing.T) {
 	t.Parallel()
-	if verbs["harden"] == nil {
+	if !declaredVerb("harden") {
 		t.Fatal("harden is no verb")
 	}
-	err := hardenBy(t.TempDir(), []string{"rust"}, (&asked{}).run,
-		&bytes.Buffer{}, &bytes.Buffer{})
-	if !errors.Is(err, errHardenLanguage) {
+	err := argsHardenBy(t, t.TempDir(), []string{"rust"}, (&asked{}).run,
+		&bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "takes no word") {
 		t.Errorf("rust: %v", err)
 	}
 }

@@ -179,7 +179,7 @@ func TestLoadOrderTheRepositoryWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := config.Load(home, home, tree); err == nil ||
-		!strings.Contains(err.Error(), "unknown key") {
+		!strings.Contains(err.Error(), "colour: this is not a key") {
 		t.Fatalf("an unknown key in .game loaded: %v", err)
 	}
 }
@@ -613,13 +613,14 @@ func TestAStackMemberMayBeTheirs(t *testing.T) {
 
 // a stack line takes a name, a ref, and theirs or nothing after it.
 func TestAStackLineIsRefusedPastItsWords(t *testing.T) {
-	for _, src := range []string{
-		"stack crush\n", "stack crush v0.98.1 mine\n",
-		"stack crush v0.98.1 theirs too\n",
+	for src, want := range map[string]string{
+		"stack crush\n":                    "stack: this key takes 2 to 3 words",
+		"stack crush v0.98.1 mine\n":       "stack wants",
+		"stack crush v0.98.1 theirs too\n": "stack: this key takes 2 to 3 words",
 	} {
 		_, err := parsed(src, false)
-		if err == nil || !strings.Contains(err.Error(), "stack wants") {
-			t.Errorf("%q: %v, want it refused", src, err)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want it refused with %q", src, err, want)
 		}
 	}
 }

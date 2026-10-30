@@ -10,7 +10,6 @@ import (
 
 	"github.com/janearc/game/internal/release"
 	"github.com/janearc/game/internal/repo"
-	"go.uber.org/mock/gomock"
 )
 
 // TestAStackRefusesATreeThatIsNotClean: a root with a change not
@@ -91,14 +90,17 @@ func TestAStackLetsCleanHistoryThrough(t *testing.T) {
 
 // refAbsent is a check that the release ref for the tag is not there.
 type refAbsent struct {
-	t    *testing.T
-	tree repo.Repo
+	t     *testing.T
+	tree  repo.Repo
+	asked int
 }
 
-// Qualify is the mock's answer. It looks for the ref as the stack is
-// shown. The ref must not be written yet.
-func (look refAbsent) Qualify(assembled release.Stacked) error {
+// Qualify is the qualifier's answer. It looks for the ref as the stack
+// is shown, and counts the times it is asked. The ref must not be written
+// yet.
+func (look *refAbsent) Qualify(assembled release.Stacked) error {
 	look.t.Helper()
+	look.asked++
 	if kept, _ := look.tree.Git("rev-parse", "--verify", "-q",
 		refOf("v1")); kept != "" {
 		look.t.Errorf("the ref was written before it was asked: %s", kept)
@@ -114,11 +116,12 @@ func (look refAbsent) Qualify(assembled release.Stacked) error {
 func TestAStackIsShownToItsQualifierBeforeItsRefIsWritten(t *testing.T) {
 	t.Parallel()
 	tree, dist, members := stackOf(t, "x", map[string]string{"x.txt": "x\n"})
-	qualifier := NewMockQualifier(gomock.NewController(t))
-	look := refAbsent{t: t, tree: tree}
-	qualifier.EXPECT().Qualify(gomock.Any()).DoAndReturn(look.Qualify).Times(count.One)
+	look := &refAbsent{t: t, tree: tree}
 	out, err := release.Stack(tree,
-		stackOptions(dist).Qualifying(qualifier), members)
+		stackOptions(dist).Qualifying(look.Qualify), members)
+	if look.asked != count.One {
+		t.Errorf("the qualifier was asked %d times", look.asked)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,11 +141,17 @@ func TestARefusedStackLeavesTheEarlierRefAsItWas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	qualifier := NewMockQualifier(gomock.NewController(t))
 	refusal := errors.New("not clean by the members' rules")
-	qualifier.EXPECT().Qualify(gomock.Any()).Return(refusal).Times(count.One)
-	_, err = release.Stack(tree, stackOptions(dist).Qualifying(qualifier),
+	asked := 0
+	refuse := func(release.Stacked) error {
+		asked++
+		return refusal
+	}
+	_, err = release.Stack(tree, stackOptions(dist).Qualifying(refuse),
 		members)
+	if asked != count.One {
+		t.Errorf("the qualifier was asked %d times", asked)
+	}
 	if !errors.Is(err, refusal) {
 		t.Fatalf("the refusal was %v", err)
 	}

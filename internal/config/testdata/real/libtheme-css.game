@@ -1,0 +1,37 @@
+# vim: set filetype=game:
+# game: this repository
+
+# this is libtheme.
+name libtheme-css
+
+# has my name, makes game grumpy
+exclude DESIGN.md
+exclude NOTICE
+exclude CHANGELOG.md
+
+# it is very hard to describe this package in less than 25 rows.
+# so i didn't.
+# any lint line here replaces every lint rule in your game config, so
+# these copy them all; the allowance alone turned lint off.
+lint width 80
+lint rows 25
+lint comments
+lint print
+lint exclaim
+lint shout
+lint words hyperscaler enterprise-grade blazing-fast load-bearing
+lint paragraph 4
+lint allow README.md rows
+
+run known .           :: go run ./cmd/libtheme known
+run known .           :: go run ./cmd/libtheme known --paint
+run known .           :: go run ./cmd/libtheme roundtrip
+
+# visualdocs is v nice
+run visualdocs .      :: go run ./cmd/visualdocs
+run visualdocs-css .  :: go run ./cmd/visualdocs --css
+run visualdocs-go .   :: go run ./cmd/visualdocs --go
+
+# the mocks, generated from the interfaces they stand in for. mockgen is
+# a tool of go.mod, so no one installs it.
+run mocks .           :: go tool mockgen -write_package_comment=false -destination internal/mocks/host.go -package mocks github.com/janearc/libtheme-css/internal/host Files,File,Stopper

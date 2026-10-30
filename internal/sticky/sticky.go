@@ -62,10 +62,12 @@ const shaAndRef = 2
 // is per repo, not per branch. any branch's Claim answers the question.
 // a branch the road lists but will not give is an error, not an empty
 // answer: nobody can say who holds it.
-func holder(here repo.Repo, road string) (Claim, bool, error) {
+//
+// nil with no error is a road nobody holds.
+func holder(here repo.Repo, road string) (*Claim, error) {
 	heads, err := here.Git("ls-remote", "--heads", road)
 	if err != nil {
-		return Claim{}, false, err
+		return nil, err
 	}
 	for _, line := range strings.Split(heads, "\n") {
 		fields := strings.Fields(line)
@@ -74,7 +76,7 @@ func holder(here repo.Repo, road string) (Claim, bool, error) {
 		}
 		sha, ref := fields[count.First], fields[count.Next(count.First)]
 		if _, err := here.Git("fetch", "-q", road, ref); err != nil {
-			return Claim{}, false, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"%s lists %s but will not give it: %w",
 				road, ref, err,
 			)
@@ -83,13 +85,13 @@ func holder(here repo.Repo, road string) (Claim, bool, error) {
 		if err != nil {
 			continue // no Claim on this branch
 		}
-		return Claim{
+		return &Claim{
 			holder: strings.TrimSpace(name),
 			branch: strings.TrimPrefix(ref, "refs/heads/"),
 			commit: sha,
-		}, true, nil
+		}, nil
 	}
-	return Claim{}, false, nil
+	return nil, nil
 }
 
 // stickable gives the branch a Claim may be made on. it refuses a detached
@@ -118,11 +120,11 @@ func stickable(here repo.Repo, road string) (string, error) {
 	} else if ok {
 		return "", fmt.Errorf("already stuck here, by %s", holder)
 	}
-	taken, held, err := holder(here, road)
+	taken, err := holder(here, road)
 	if err != nil {
 		return "", err
 	}
-	if held {
+	if taken != nil {
 		return "", fmt.Errorf(
 			"%s already holds this repository, stuck on %s at %s",
 			taken.holder,
@@ -135,30 +137,30 @@ func stickable(here repo.Repo, road string) (string, error) {
 
 // Stick claims the repository for holder. it commits the name in .sticky,
 // alone, on the checked out branch, which is not main.
-func Stick(here repo.Repo, road, holder string) (Claim, error) {
+func Stick(here repo.Repo, road, holder string) (*Claim, error) {
 	branch, err := stickable(here, road)
 	if err != nil {
-		return Claim{}, err
+		return nil, err
 	}
 	at := here.Path(stickyFile)
 	err = os.WriteFile(at, []byte(holder+"\n"), ownerWrites)
 	if err != nil {
-		return Claim{}, err
+		return nil, err
 	}
 	if _, err := here.Git("add", "--", stickyFile); err != nil {
-		return Claim{}, err
+		return nil, err
 	}
 	// commit the Claim alone. whatever else is staged stays staged.
 	if _, err := here.GitIn(
 		"", "commit", "-q", "-m", "stick", "--", stickyFile,
 	); err != nil {
-		return Claim{}, err
+		return nil, err
 	}
 	commit, err := here.Git("rev-parse", "HEAD")
 	if err != nil {
-		return Claim{}, err
+		return nil, err
 	}
-	return Claim{holder: holder, branch: branch, commit: commit}, nil
+	return &Claim{holder: holder, branch: branch, commit: commit}, nil
 }
 
 // Sync fetches branch from road and fast-forwards to its tip. it returns the

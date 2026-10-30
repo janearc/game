@@ -173,10 +173,10 @@ func (scratch Scratch) Close() { _ = os.Remove(scratch.file) }
 // Scratch is a temporary index with rev read in and omit removed from it.
 // Each path in omit is a file or a directory with everything under it.
 // The caller closes the index. If it could not be made nothing is left.
-func (here Repo) Scratch(rev string, omit []string) (Scratch, error) {
+func (here Repo) Scratch(rev string, omit []string) (*Scratch, error) {
 	index, err := os.CreateTemp("", "game-index-*")
 	if err != nil {
-		return Scratch{}, err
+		return nil, err
 	}
 	index.Close()
 	// git makes the index itself; the name is what is kept
@@ -187,7 +187,7 @@ func (here Repo) Scratch(rev string, omit []string) (Scratch, error) {
 	}
 	if _, err := here.GitEnv(scratch.env, "read-tree", rev); err != nil {
 		scratch.Close()
-		return Scratch{}, err
+		return nil, err
 	}
 	if count.Positive(len(omit)) {
 		args := append([]string{
@@ -195,10 +195,10 @@ func (here Repo) Scratch(rev string, omit []string) (Scratch, error) {
 		}, omit...)
 		if _, err := here.GitEnv(scratch.env, args...); err != nil {
 			scratch.Close()
-			return Scratch{}, err
+			return nil, err
 		}
 	}
-	return scratch, nil
+	return &scratch, nil
 }
 
 // indexed is the tree written from a scratch index. Rev is read in and

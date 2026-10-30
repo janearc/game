@@ -77,7 +77,16 @@ every time.
 the verbs a go project needs that go itself does not know it needs.
 all you need is `sh bootstrap.sh install` once, then game builds game.
 
-    game check    gofmt, vet and the tests, exit code kept
+    game check    gofmt, vet and the tests, exit code kept. with a `cover`
+                  line in your config or the project's .game, it then
+                  measures each Go package's coverage, as `game cover`
+                  does, and fails a package under the floor. it names the
+                  package, its percentage and its first uncovered lines.
+                  files with the "Code generated ... DO NOT EDIT." header
+                  and packages with no statements are skipped
+    game cover    the Go coverage report alone, file by file, least first;
+                  `--html` writes the html report and prints its path. for
+                  Go only; the C and Xcode verbs are now in dismay
     game mutants  the mutation run: the source changed one thing at a time,
                   the tests run against each; what survives is listed, and
                   .mutants names the changes that make no difference.
@@ -105,12 +114,16 @@ all you need is `sh bootstrap.sh install` once, then game builds game.
                   it is what a release asks for. `lint harden` in .game
                   holds the tree to the harden rule below, and a release
                   refuses what fails it, as it refuses the lint
-    game harden   source, binaries and modules held to the hardened
-                  default; `harden xcode -scheme S` adds build settings
+    game harden   Go source and modules held to the hardened default
     game aslr     build, then check the binaries are position-independent
-                  (c, xcode, go; no word checks every Mach-O in bin/)
-    game leaks    build and run under the address sanitizer, then under
-                  leaks (c, xcode, go) to find what was left behind
+                  (`go`; no word checks every Mach-O in bin/)
+    game leaks    build and run under leaks (`go`) to find what the program
+                  held outside the Go heap
+
+the C, Objective-C, Swift and Xcode verbs (`build-c`, `build-xcode`, `fuzz`,
+`race`, `mutants mutate-c`, `mutate-xcode` and `mutate-text`, and the native
+halves of `cover`, `aslr`, `leaks` and `harden`) are now in dismay.
+
     game release  one flat commit: the whole tree, none of the road,
                   swept and proven. `release push TAG` is the only thing
                   that reaches the clean remote
@@ -120,7 +133,7 @@ all you need is `sh bootstrap.sh install` once, then game builds game.
     game clean    go clean, and bin/ away; --cache for a cold run
     game bounce   linting for first person; the third person signs off
     game sweep    what must not ship: trailers, urls, uuids, paths, never-words
-    game version  which commit this binary is, and how old
+    game --age    which commit this binary is, and how old
     game stick    claims this repository for a pairing session; sticky
                   follows the claim's tip, unstick lets it go clean
 
@@ -134,9 +147,6 @@ its `--age` and `--who`:
                        no session id, or none shaped like one
     main.stampedSids   the last three session lines that end the commits
                        behind it: what the messages say, not a signature
-
-older commands read main.who and main.sids; game stamps both names with
-the same two values.
 
 settings: `~/.config/game/config`, a block per project, then `.game`,
 which names its project. `example/config` is a start.

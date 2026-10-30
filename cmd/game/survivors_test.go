@@ -10,14 +10,16 @@ import (
 	"testing"
 
 	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/lint"
 )
 
 // TestSweepNamesTheHistoryItCouldNotRead: the error says the history.
 func TestSweepNamesTheHistoryItCouldNotRead(t *testing.T) {
 	t.Parallel()
 	work := repoAt(swept(t))
-	err := sweepTo(work, blankConfig(), []string{"nowhere"}, words(t),
+	err := verbTo(t, "sweep", sweepVerb, work, blankConfig(), []string{"nowhere"},
 		&bytes.Buffer{})
+
 	if err == nil || !strings.HasPrefix(err.Error(),
 		"the history of nowhere: ") {
 		t.Errorf("a revision that is not there: %v", err)
@@ -28,7 +30,7 @@ func TestSweepNamesTheHistoryItCouldNotRead(t *testing.T) {
 func TestSweepSaysNothingOfHistoryForARevisionThatIsThere(t *testing.T) {
 	t.Parallel()
 	work := repoAt(swept(t))
-	err := sweepTo(work, blankConfig(), nil, words(t), &bytes.Buffer{})
+	err := verbTo(t, "sweep", sweepVerb, work, blankConfig(), nil, &bytes.Buffer{})
 	if err != nil && strings.Contains(err.Error(), "the history of") {
 		t.Errorf("HEAD: %v", err)
 	}
@@ -83,7 +85,7 @@ func TestCatchUpGivesTheErrorOfReadingTheBranch(t *testing.T) {
 // TestLintExportedSaysTheScratchFolderItCouldNotMake: not the export.
 func TestLintExportedSaysTheScratchFolderItCouldNotMake(t *testing.T) {
 	work := freshTree(t, "x", map[string]string{"a.md": "x\n"})
-	rules, err := described(gamed(t, "lint width 40"))
+	rules, err := lint.Describe(gamed(t, "lint width 40").Lint())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +101,7 @@ func TestLintExportedSaysTheScratchFolderItCouldNotMake(t *testing.T) {
 // TestLintExportedMakesItsScratchFolder: no such error comes.
 func TestLintExportedMakesItsScratchFolder(t *testing.T) {
 	work := freshTree(t, "x", map[string]string{"a.md": "x\n"})
-	rules, err := described(gamed(t, "lint width 40"))
+	rules, err := lint.Describe(gamed(t, "lint width 40").Lint())
 	if err != nil {
 		t.Fatal(err)
 	}

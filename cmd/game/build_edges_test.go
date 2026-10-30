@@ -42,11 +42,10 @@ func TestBuildBinariesBuildsEachCommandStamped(t *testing.T) {
 			made += "-dirty"
 		}
 		stamp := "-X main.build=" + made + " -X main.built=" + when +
-			" -X 'main.stampedWho=jm/4b732342 on loft' -X main.stampedSids=" +
-			" -X 'main.who=jm/4b732342 on loft' -X main.sids="
+			" -X 'main.stampedWho=jm/4b732342 on loft' -X main.stampedSids="
 		stand := &asked{}
 		var out bytes.Buffer
-		if err := buildBinariesBy(work, blankConfig(),
+		if err := buildBinaries(work, blankConfig(),
 			"jm/4b732342 on loft", stand.run, &out, true); err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +78,7 @@ func TestBuildBinariesBakesNeverWordsForGame(t *testing.T) {
 	work := commands(t)
 	cfg := loadedAs(t, "game", nil, nil)
 	stand := &asked{}
-	if err := buildBinariesBy(work, cfg, "", stand.run,
+	if err := buildBinaries(work, cfg, "", stand.run,
 		&bytes.Buffer{}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +87,7 @@ func TestBuildBinariesBakesNeverWordsForGame(t *testing.T) {
 		t.Fatalf("build did not bake first: %q", stand.said)
 	}
 	stand = &asked{fail: "go run"}
-	if err := buildBinariesBy(work, cfg, "", stand.run,
+	if err := buildBinaries(work, cfg, "", stand.run,
 		&bytes.Buffer{}, false); err == nil || len(stand.said) != count.One {
 		t.Fatalf("bake failure: %v, asked %q", err, stand.said)
 	}
@@ -106,7 +105,7 @@ func TestBuildBinariesMarksAStickyBuild(t *testing.T) {
 		true:  "\x1b[36msticky build: bin/a " + commit + "\x1b[0m\n",
 	} {
 		var out bytes.Buffer
-		if err := buildBinariesBy(work, blankConfig(), "", (&asked{}).run,
+		if err := buildBinaries(work, blankConfig(), "", (&asked{}).run,
 			&out, coloured); err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +120,7 @@ func TestBuildBinariesMarksAStickyBuild(t *testing.T) {
 // that fails is the error, and nothing after it is built.
 func TestBuildBinariesStopsAtWhatFails(t *testing.T) {
 	t.Parallel()
-	err := buildBinariesBy(cleaned(t, "x", nil), blankConfig(), "",
+	err := buildBinaries(cleaned(t, "x", nil), blankConfig(), "",
 		(&asked{}).run, &bytes.Buffer{}, false)
 	if err == nil || err.Error() != "no cmd/ directory to build" {
 		t.Errorf("no cmd/: %v", err)
@@ -129,7 +128,7 @@ func TestBuildBinariesStopsAtWhatFails(t *testing.T) {
 	unread := commands(t)
 	write(t, unread.Path(".sticky", "x"), "a directory")
 	stand := &asked{}
-	if err := buildBinariesBy(unread, blankConfig(), "", stand.run,
+	if err := buildBinaries(unread, blankConfig(), "", stand.run,
 		&bytes.Buffer{}, false); err == nil || stand.said != nil {
 		t.Errorf("a claim that is a directory: %v, asked %q", err,
 			stand.said)
@@ -139,18 +138,18 @@ func TestBuildBinariesStopsAtWhatFails(t *testing.T) {
 	stand = &asked{}
 	nowhereRoad := filepath.Join(t.TempDir(), "nowhere.git")
 	cfg := cfgFor(t, "ada", nowhereRoad, "")
-	if err := buildBinariesBy(unsynced, cfg, "", stand.run,
+	if err := buildBinaries(unsynced, cfg, "", stand.run,
 		&bytes.Buffer{}, false); err == nil || stand.said != nil {
 		t.Errorf("a sync that failed: %v, asked %q", err, stand.said)
 	}
 	stand = &asked{fail: "./cmd/a"}
-	if err := buildBinariesBy(commands(t), blankConfig(), "",
+	if err := buildBinaries(commands(t), blankConfig(), "",
 		stand.run, &bytes.Buffer{}, false); err == nil ||
 		len(stand.said) != count.One {
 		t.Errorf("a build that failed: %v, asked %q", err, stand.said)
 	}
 	stand = &asked{fail: "codesign"}
-	if err := buildBinariesBy(commands(t), blankConfig(), "",
+	if err := buildBinaries(commands(t), blankConfig(), "",
 		stand.run, &bytes.Buffer{}, false); err == nil ||
 		len(stand.said) != count.Next(count.One) {
 		t.Errorf("a signing that failed: %v, asked %q", err, stand.said)
@@ -167,14 +166,14 @@ func TestSyncBuildSaysWhatMoved(t *testing.T) {
 		"a block with no road": cfgFor(t, "ada", "", "dist.git"),
 	} {
 		var out bytes.Buffer
-		if err := syncBuildTo(two, cfg, &out); err != nil ||
+		if err := syncBuild(two, cfg, &out); err != nil ||
 			count.Positive(out.Len()) {
 			t.Errorf("%s: %v, said %q", name, err, out.String())
 		}
 	}
 	cfg := cfgFor(t, "ada", road, "")
 	// the road has no work branch yet, so there is nothing to sync from
-	if err := syncBuildTo(two, cfg, &bytes.Buffer{}); err == nil {
+	if err := syncBuild(two, cfg, &bytes.Buffer{}); err == nil {
 		t.Error("a branch the road lacks was synced")
 	}
 	commitFile(t, one, "more.txt", "more\n", "more")
@@ -183,7 +182,7 @@ func TestSyncBuildSaysWhatMoved(t *testing.T) {
 	}
 	tip := gitAt(t, one.Dir(), "rev-parse", "HEAD")
 	var out bytes.Buffer
-	if err := syncBuildTo(two, cfg, &out); err != nil {
+	if err := syncBuild(two, cfg, &out); err != nil {
 		t.Fatal(err)
 	}
 	if want := "build: updates from " + repo.Short(tip) + " merged\n"; out.String() !=
@@ -191,17 +190,17 @@ func TestSyncBuildSaysWhatMoved(t *testing.T) {
 		t.Errorf("said %q, want %q", out.String(), want)
 	}
 	out.Reset()
-	if err := syncBuildTo(two, cfg, &out); err != nil ||
+	if err := syncBuild(two, cfg, &out); err != nil ||
 		count.Positive(out.Len()) {
 		t.Errorf("nothing moved: %v, said %q", err, out.String())
 	}
 	noRoad := filepath.Join(t.TempDir(), "no.git")
 	nowhere := cfgFor(t, "ada", noRoad, "")
-	if err := syncBuildTo(two, nowhere, &bytes.Buffer{}); err == nil {
+	if err := syncBuild(two, nowhere, &bytes.Buffer{}); err == nil {
 		t.Error("a road that is not there was synced")
 	}
 	unborn := cleaned(t, "unborn", nil)
-	if err := syncBuildTo(unborn, cfg, &bytes.Buffer{}); err == nil {
+	if err := syncBuild(unborn, cfg, &bytes.Buffer{}); err == nil {
 		t.Error("a tree with no branch was synced")
 	}
 }
@@ -221,8 +220,8 @@ func TestBuildChoosesWhatToBuildByItsWord(t *testing.T) {
 		if word != "" {
 			args = []string{word}
 		}
-		err := buildTo(cleaned(t, "root", nil), blankConfig(), args,
-			&bytes.Buffer{}, false)
+		err := buildWord(cleaned(t, "root", nil), blankConfig(), args, stackAsk{}, &bytes.Buffer{}, false, os.Executable)
+
 		if err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("%q: %v, want %q", word, err, want)
 		}
@@ -245,7 +244,8 @@ func TestBuildShowsTheArtAfterAPass(t *testing.T) {
 		{"fail", true, false},
 	} {
 		var out bytes.Buffer
-		_ = buildTo(work, cfg, []string{each.target}, &out, each.coloured)
+		_ = buildWord(work, cfg, []string{each.target}, stackAsk{}, &out, each.coloured, os.Executable)
+
 		if got := strings.HasSuffix(out.String(), "ART\n"); got != each.art {
 			t.Errorf("%s, coloured %v: art %v, said:\n%s", each.target,
 				each.coloured, got, out.String())
@@ -256,7 +256,7 @@ func TestBuildShowsTheArtAfterAPass(t *testing.T) {
 // a stack member's child is this same program, running verify.
 func TestSelfVerifyIsThisProgramVerifying(t *testing.T) {
 	t.Parallel()
-	child, err := selfVerify()
+	child, err := selfVerify(os.Executable)
 	if err != nil {
 		t.Fatal(err)
 	}

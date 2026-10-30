@@ -11,14 +11,9 @@ import (
 	"testing"
 
 	"github.com/janearc/game/internal/count"
-	"go.uber.org/mock/gomock"
 )
 
 type failedSelf struct{ err error }
-
-func (failure failedSelf) check() (func(string) *exec.Cmd, error) {
-	return nil, failure.err
-}
 
 func (failure failedSelf) path() (string, error) { return "", failure.err }
 
@@ -42,8 +37,8 @@ func (closed closedFile) close() { closed.file.Close() }
 
 func TestBuildStackPropagatesSelfVerificationFailure(t *testing.T) {
 	failure := failedSelf{err: errors.New("executable unavailable")}
-	err := buildToUsing(cleaned(t, "root", nil), blankConfig(),
-		[]string{"stack"}, io.Discard, false, failure.check)
+	err := buildWord(cleaned(t, "root", nil), blankConfig(),
+		[]string{"stack"}, stackAsk{}, io.Discard, false, failure.path)
 	if !errors.Is(err, failure.err) {
 		t.Fatalf("self verification failure lost: %v", err)
 	}
@@ -51,7 +46,7 @@ func TestBuildStackPropagatesSelfVerificationFailure(t *testing.T) {
 
 func TestSelfVerifyPropagatesExecutableFailure(t *testing.T) {
 	failure := failedSelf{err: errors.New("executable unavailable")}
-	child, err := selfVerifyUsing(failure.path)
+	child, err := selfVerify(failure.path)
 	if !errors.Is(err, failure.err) || child != nil {
 		t.Fatalf("selfVerify error %v, child present %t", err, child != nil)
 	}
@@ -59,7 +54,7 @@ func TestSelfVerifyPropagatesExecutableFailure(t *testing.T) {
 
 func TestExportPropagatesPipeFailure(t *testing.T) {
 	dir := t.TempDir()
-	err := exportUsing(repoAt(dir), "HEAD", dir, occupiedCommand{}.command)
+	err := export(repoAt(dir), "HEAD", dir, occupiedCommand{}.command)
 	if err == nil {
 		t.Fatal("export accepted an archive whose stdout was already set")
 	}
@@ -67,8 +62,8 @@ func TestExportPropagatesPipeFailure(t *testing.T) {
 
 func TestSignGoDoesNothingOutsideDarwin(t *testing.T) {
 	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	if err := signGoOn(t.TempDir(), "bin/sample", commands.Run, "linux"); err != nil {
+	commands := notRun(t)
+	if err := signGo(t.TempDir(), "bin/sample", commands, "linux"); err != nil {
 		t.Fatalf("non-darwin signing failed: %v", err)
 	}
 }
@@ -99,7 +94,7 @@ func TestPaintedShowsArtOnCharacterDevice(t *testing.T) {
 	t.Cleanup(restoredStdout{previous: os.Stdout}.restore)
 	os.Stdout = null
 	t.Setenv("NO_COLOR", "")
-	if !painted(dir, "sample") {
+	if !painted(quiet, dir, "sample") {
 		t.Fatal("character device did not receive available art")
 	}
 }
@@ -121,8 +116,8 @@ func TestReleaseChecksPropagatesHardeningFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := gamed(t, "lint harden")
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	err := releaseChecks(repoAt(dir), cfg, false, commands.Run, io.Discard)
+	commands := notRun(t)
+	err := releaseChecks(repoAt(dir), cfg, false, commands, io.Discard)
 	if err == nil {
 		t.Fatal("release accepted an unreadable module")
 	}

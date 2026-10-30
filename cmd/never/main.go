@@ -105,7 +105,7 @@ func bake(whose, home, dir string) (string, error) {
 			"baked in; this game will build, and refuse to "+
 			"release", cfg.Words()), nil
 	}
-	salt, err := saltBeside(cfg.Words())
+	salt, err := saltBeside(cfg.Words(), rand.Read)
 	if err != nil {
 		return "", err
 	}
@@ -134,13 +134,8 @@ const saltBytes = 16
 var exit = os.Exit
 
 // saltBeside gives the salt kept beside the list, making it on first use.
-// it is sixteen random bytes, readable only by this user.
-func saltBeside(list string) (string, error) {
-	return saltBesideUsing(list, rand.Read)
-}
-
-// saltBesideUsing is saltBeside with the random source given.
-func saltBesideUsing(
+// it is sixteen random bytes, from randomRead, readable only by this user.
+func saltBeside(
 	list string,
 	randomRead func([]byte) (int, error),
 ) (string, error) {

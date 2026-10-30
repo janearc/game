@@ -37,11 +37,7 @@ lint allow doc/getting-started.md paragraph exclaim words
 # property tests, in the packages whose tests import rapid, run under
 # game check with this many checks each.
 rapid checks 1000
-target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -source cmd/game/runner_contract_test.go -destination cmd/game/runner_mock_test.go -package main
-target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -source cmd/game/mutantseam.go -destination cmd/game/mutantseam_mock_test.go -package main
 target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -destination internal/patch/paths_mock_test.go -package patch_test github.com/janearc/game/internal/patch Paths
 target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -destination internal/mutants/files_mock_test.go -package mutants_test github.com/janearc/game/internal/mutants Files
 target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -destination internal/release/temp_files_mock_test.go -package release_test github.com/janearc/game/internal/release TempFiles,PatchFile
-target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -destination internal/release/qualifier_mock_test.go -package release_test github.com/janearc/game/internal/release Qualifier
-target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -source cmd/game/assembly.go -destination cmd/game/assembly_mock_test.go -package main
 target mocks . :: go run go.uber.org/mock/mockgen@v0.6.0 -destination internal/repo/runner_mock_test.go -package repo_test github.com/janearc/game/internal/repo Runner

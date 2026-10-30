@@ -28,8 +28,8 @@ type Never struct {
 // neverWord is the kind of hit a never-word makes. it cannot say which one.
 const neverWord = "a never-word"
 
-// longest is the most words a never-word may run to: three, by
-// definition, a word or a name of two or three.
+// longest is the most words a never-word may run to: three, as defined:
+// a word or a name of two or three.
 const longest = 3
 
 // Embedded is the files this build was baked with: never/hashes among them

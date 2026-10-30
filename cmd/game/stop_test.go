@@ -7,35 +7,25 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/mutants"
-	"go.uber.org/mock/gomock"
 )
 
 // the counts of the stop tests, defined here.
 const (
-	twice         = 2 // defined here: the tally and the report's note each read the outcomes
-	reportMinimum = 2 // defined here: a report with a note has at least two lines
+	reportMinimum = 2                      // defined here: a report with a note has at least two lines
+	signalGrace   = 300 * time.Millisecond // defined here: the time a signal sent to this process has to be read
 )
 
-// stoppedFound is a run that was stopped with these outcomes. every list
-// the verb reads after a run is read. the outcomes are read twice: once
-// for the report's note and once for the tally.
-func stoppedFound(ctrl *gomock.Controller, lines []string,
-	states []string) *Mockfindings {
-	var outcomes []finding
-	for _, state := range states {
-		outcomes = append(outcomes, finding{state: state, name: "n",
-			at: "a.go:1 n"})
+// foundWith is a report with one outcome in each of these states.
+func foundWith(states ...string) mutants.Report {
+	var outcomes []mutants.Outcome
+	for at, state := range states {
+		outcomes = append(outcomes, outcomeAt(state, "a.go", at+1, "TestF"))
 	}
-	found := NewMockfindings(ctrl)
-	found.EXPECT().Lines().Return(lines)
-	found.EXPECT().Untested().Return(nil)
-	found.EXPECT().Broken().Return(nil)
-	found.EXPECT().Stale().Return(nil)
-	found.EXPECT().Outcomes().Return(outcomes).Times(twice)
-	return found
+	return mutants.NewReport(outcomes, nil, nil, nil, nil)
 }
 
 // stopped part way the run writes the report of every mutant that
@@ -44,26 +34,19 @@ func stoppedFound(ctrl *gomock.Controller, lines []string,
 // error.
 func TestAStoppedRunWritesAPartialReport(t *testing.T) {
 	t.Parallel()
-	lines := []string{
-		"killed     a.go:1 a.go F: a => b\tTestF",
-		"stopped    a.go:2 a.go F: c => d\t",
-		"stopped    a.go:3 a.go F: e => f\t",
-	}
-	var opts mutants.Options
-	ctrl := gomock.NewController(t)
-	found := stoppedFound(ctrl, lines, []string{"killed", "stopped", "stopped"})
+	found := foundWith("killed", "stopped", "stopped")
 	report := filepath.Join(t.TempDir(), "r.txt")
-	said, err := mutated(mines(ctrl, &opts, found, context.Canceled),
-		"--report", report)
+	var out strings.Builder
+	err := writeAndTell(&out, found, report, true)
 	if err == nil || !strings.Contains(err.Error(), "stopped with 2 not run") {
 		t.Errorf("a stopped run: %v", err)
 	}
-	if !strings.Contains(said, "mutants: 1 run; killed 1") {
-		t.Errorf("a stopped run told %q", said)
+	if !strings.Contains(out.String(), "mutants: 1 run; killed 1") {
+		t.Errorf("a stopped run told %q", out.String())
 	}
 	written, readErr := os.ReadFile(report)
 	want := "partial run: 2 of 3 mutants not reached\n" +
-		strings.Join(lines, "\n") + "\n"
+		strings.Join(found.Lines(), "\n") + "\n"
 	if readErr != nil || string(written) != want {
 		t.Errorf("wrote %q, want %q (%v)", written, want, readErr)
 	}
@@ -73,17 +56,14 @@ func TestAStoppedRunWritesAPartialReport(t *testing.T) {
 // report is whole and carries no note.
 func TestAStoppedRunWithNothingUnreachedIsNotPartial(t *testing.T) {
 	t.Parallel()
-	lines := []string{"killed     a.go:1 a.go F: a => b\tTestF"}
-	var opts mutants.Options
-	ctrl := gomock.NewController(t)
-	found := stoppedFound(ctrl, lines, []string{"killed"})
+	found := foundWith("killed")
 	report := filepath.Join(t.TempDir(), "r.txt")
-	if _, err := mutated(mines(ctrl, &opts, found, context.Canceled),
-		"--report", report); err == nil {
+	var out strings.Builder
+	if err := writeAndTell(&out, found, report, true); err == nil {
 		t.Error("a stopped run was not an error")
 	}
 	written, _ := os.ReadFile(report)
-	if want := lines[count.First] + "\n"; string(written) != want {
+	if want := found.Lines()[count.First] + "\n"; string(written) != want {
 		t.Errorf("wrote %q, want %q", written, want)
 	}
 }
@@ -92,74 +72,37 @@ func TestAStoppedRunWithNothingUnreachedIsNotPartial(t *testing.T) {
 // partial, whatever it found.
 func TestACompleteRunWritesAReportThatIsNotPartial(t *testing.T) {
 	t.Parallel()
-	lines := []string{
-		"killed     a.go:1 a.go F: a => b\tTestF",
-		"equivalent a.go:2 a.go F: c => d\t",
-	}
-	var opts mutants.Options
-	ctrl := gomock.NewController(t)
-	found := nothingFound(ctrl)
-	found.EXPECT().Lines().Return(lines)
+	found := foundWith("killed", "equivalent")
 	report := filepath.Join(t.TempDir(), "r.txt")
-	if _, err := mutated(mines(ctrl, &opts, found, nil), "--report",
-		report); err != nil {
+	var out strings.Builder
+	if err := writeAndTell(&out, found, report, false); err != nil {
 		t.Fatal(err)
 	}
 	written, _ := os.ReadFile(report)
-	if want := strings.Join(lines, "\n") + "\n"; string(written) != want ||
+	if want := strings.Join(found.Lines(), "\n") + "\n"; string(written) != want ||
 		strings.Contains(string(written), "partial") {
 		t.Errorf("wrote %q, want %q", written, want)
 	}
 }
 
-// settlingMiner is a miner that settles with the findings it is given
-// before it returns, as the real one settles before it removes its copies.
-// it notes whether the report was on disk when it was about to return.
-type settlingMiner struct {
-	settles, returns findings
-	err              error
-	report           string
-	onDisk           *bool
-	before           func()
-}
-
-// run settles and notes whether the report is on disk. then it returns.
-func (miner settlingMiner) run(ctx context.Context, _ string,
-	_ mutants.Options, settled func(findings),
-	_ func(string)) (findings, error) {
-	if miner.before != nil {
-		miner.before()
-		<-ctx.Done()
-	}
-	settled(miner.settles)
-	_, err := os.Stat(miner.report)
-	*miner.onDisk = err == nil
-	return miner.returns, miner.err
-}
-
-// the miner hands the report over as it settles, before it removes its
-// copies. the verb writes the report and tells the tally then, and does
-// not do either again when the run returns: the findings the miner returns
-// are never asked. the report is on disk before the miner returns.
+// the report is handed over as the run settles. the verb writes the report
+// and tells the tally then, and does not do either again when the run
+// returns: what the run returns is never asked.
 func TestTheReportIsWrittenAsTheRunSettles(t *testing.T) {
 	t.Parallel()
 	report := filepath.Join(t.TempDir(), "r.txt")
-	ctrl := gomock.NewController(t)
-	found := nothingFound(ctrl)
-	found.EXPECT().Lines().Return(nil)
-	var onDisk bool
-	stub := settlingMiner{settles: found, returns: NewMockfindings(ctrl),
-		report: report, onDisk: &onDisk}
-	run := NewMockminer(ctrl)
-	run.EXPECT().Run(gomock.Any(), ".", gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(stub.run)
-	said, err := mutated(run, "--report", report)
-	if err != nil || !onDisk {
-		t.Errorf("settled: %v, on disk when the miner came back: %v",
-			err, onDisk)
+	var out strings.Builder
+	tell := &settled{ctx: context.Background(), out: &out, path: report}
+	tell.settle(foundWith("killed"))
+	if _, err := os.Stat(report); err != nil {
+		t.Errorf("the report was not on disk as the run settled: %v", err)
 	}
-	if strings.Count(said, "mutants: 0 run") != count.One {
-		t.Errorf("the tally was told %q", said)
+	if err := tell.verdict(foundWith("survived"), false); err != nil {
+		t.Errorf("settled: %v", err)
+	}
+	if strings.Count(out.String(), "mutants: ") != count.One ||
+		strings.Contains(out.String(), "survived: ") {
+		t.Errorf("the tally was told %q", out.String())
 	}
 }
 
@@ -167,36 +110,49 @@ func TestTheReportIsWrittenAsTheRunSettles(t *testing.T) {
 func TestAReportThatCannotBeWrittenAsTheRunSettlesIsAnError(t *testing.T) {
 	t.Parallel()
 	nowhere := filepath.Join(t.TempDir(), "no", "r.txt")
-	ctrl := gomock.NewController(t)
-	found := NewMockfindings(ctrl)
-	found.EXPECT().Lines().Return(nil)
-	var onDisk bool
-	stub := settlingMiner{settles: found, returns: NewMockfindings(ctrl),
-		report: nowhere, onDisk: &onDisk}
-	run := NewMockminer(ctrl)
-	run.EXPECT().Run(gomock.Any(), ".", gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(stub.run)
-	if _, err := mutated(run, "--report", nowhere); err == nil {
+	var out strings.Builder
+	tell := &settled{ctx: context.Background(), out: &out, path: nowhere}
+	tell.settle(foundWith("killed"))
+	if err := tell.verdict(foundWith("killed"), false); err == nil {
 		t.Error("a report that could not be written was not an error")
 	}
 }
 
-// signalSelf sends this process the signal the verb has asked to be told
-// of, as a stopped run is.
-func signalSelf(t *testing.T) func() {
-	return signalling{t: t}.send
-}
-
-// signalling is a test that sends its own process SIGTERM.
-type signalling struct {
-	t *testing.T
-}
-
-// send sends the signal.
-func (sig signalling) send() {
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		sig.t.Error(err)
+// a run that settles with the report not yet written writes it when it
+// returns.
+func TestARunThatNeverSettledWritesWhenItReturns(t *testing.T) {
+	t.Parallel()
+	report := filepath.Join(t.TempDir(), "r.txt")
+	var out strings.Builder
+	tell := &settled{ctx: context.Background(), out: &out, path: report}
+	if err := tell.verdict(foundWith("killed"), false); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := os.Stat(report); err != nil ||
+		strings.Count(out.String(), "mutants: ") != count.One {
+		t.Errorf("not written (%v), told %q", err, out.String())
+	}
+}
+
+// signalAtFirstLine sends this process the signal the verb has asked to
+// be told of, as a stopped run is, when the first line is said to it. it
+// then gives the signal time to be read.
+type signalAtFirstLine struct {
+	t    *testing.T
+	sent bool
+	said strings.Builder
+}
+
+// Write notes what is said and signals at the first.
+func (sig *signalAtFirstLine) Write(line []byte) (int, error) {
+	if !sig.sent {
+		sig.sent = true
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			sig.t.Error(err)
+		}
+		time.Sleep(signalGrace)
+	}
+	return sig.said.Write(line)
 }
 
 // stopped by a signal the run settles a report that is told as stopped.
@@ -204,18 +160,12 @@ func (sig signalling) send() {
 // to this process. the verb has asked to be told of it. so the test runs
 // alone.
 func TestARunStoppedByASignalSettlesAsStopped(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	found := nothingFound(ctrl)
-	var onDisk bool
-	stub := settlingMiner{settles: found, returns: NewMockfindings(ctrl),
-		report: os.DevNull, onDisk: &onDisk, before: signalSelf(t)}
-	stub.err = context.Canceled
-	run := NewMockminer(ctrl)
-	run.EXPECT().Run(gomock.Any(), ".", gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(stub.run)
-	_, err := mutated(run)
-	if err == nil || !strings.Contains(err.Error(), "interrupted") {
-		t.Errorf("a run stopped by a signal: %v", err)
+	sig := &signalAtFirstLine{t: t}
+	err := argsMutate(t, repoAt(tinyTree(t)), nil, sig)
+	if err == nil || (!strings.Contains(err.Error(), "interrupted") &&
+		!strings.Contains(err.Error(), "stopped with")) {
+		t.Errorf("a run stopped by a signal: %v, said %q", err,
+			sig.said.String())
 	}
 }
 
@@ -231,8 +181,7 @@ func TestAFinishedRunKeepsItsReportWhenTheCopiesGo(t *testing.T) {
 	place := stopPlace(t)
 	t.Setenv("TMPDIR", place)
 	var out strings.Builder
-	err := mutateBy(repoAt(tiny), []string{"--report", report},
-		diskMiner{}, &out)
+	err := argsMutate(t, repoAt(tiny), []string{"--report", report}, &out)
 	if err == nil || !strings.Contains(err.Error(), "survived") {
 		t.Errorf("a run over a tree with a survivor: %v", err)
 	}

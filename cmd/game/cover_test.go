@@ -103,26 +103,6 @@ func (prop totalsProperty) check(t *rapid.T) {
 	}
 }
 
-// Libraries game fetched and test files are left out; a project's own
-// files are counted.
-func TestCountedLeavesOutLibrariesAndTests(t *testing.T) {
-	t.Parallel()
-	for path, want := range map[string]bool{
-		"half.c": true, "Sources/Sign/Sign.swift": true, "src/m.m": true,
-		"bin/.deps/theft-62e093d/src/theft.c":        false,
-		"/tree/bin/.deps/theft-62e093d/src/a.c":      false,
-		"Tests/SignTests/SignTests.swift":            false,
-		"/tree/Tests/x/y.m":                          false,
-		"github.com/janearc/game/cmd/game/a_test.go": false,
-		"Sources/LibTests.swift":                     false,
-		"Sources/LibTest.m":                          false,
-	} {
-		if counted(path) != want {
-			t.Errorf("%s: counted %v", path, !want)
-		}
-	}
-}
-
 // A Go profile's blocks are summed by file; a block listed twice counts
 // once, run if either says so.
 func TestGoCoveredSumsEachFile(t *testing.T) {
@@ -180,8 +160,8 @@ func TestCoverGoReportsTheProfile(t *testing.T) {
 	shutFile := os.FileMode(0o600)
 	tests := &goTests{profile: "mode: set\nx/a.go:1.1,2.2 2 1\n",
 		mode: shutFile}
-	var out, errs bytes.Buffer
-	err := coverBy(dir, nil, tests.run, noFetch, &out, &errs)
+	var out bytes.Buffer
+	err := argsCoverBy(t, dir, nil, tests.run, &out)
 	if err != nil || out.String() != " 100.0%  x/a.go (2 of 2)\n"+
 		" 100.0%  total (2 of 2)\n" || len(tests.calls) != count.One ||
 		tests.calls[count.First].name != "go" {
@@ -191,25 +171,24 @@ func TestCoverGoReportsTheProfile(t *testing.T) {
 }
 
 // anti-tests: failing tests, no profile written, a profile it cannot
-// read, no room for bin/, and a word that is not c or xcode.
+// read, no room for bin/, and a word, which cover does not take.
 func TestCoverGoRefusesWhatItCannotReport(t *testing.T) {
 	t.Parallel()
-	var out, errs bytes.Buffer
+	var out bytes.Buffer
 	shutFile := os.FileMode(0o600)
 	failed := errors.New("go test: FAIL")
 	failing := &goTests{tools: tools{fail: map[string]error{"go": failed}}}
-	if err := coverBy(t.TempDir(), nil, failing.run, noFetch, &out,
-		&errs); !errors.Is(err, failed) {
+	if err := argsCoverBy(t, t.TempDir(), nil, failing.run,
+		&out); !errors.Is(err, failed) {
 		t.Errorf("failing tests: %v", err)
 	}
-	if err := coverBy(t.TempDir(), nil, (&goTests{}).run, noFetch, &out,
-		&errs); !errors.Is(err, os.ErrNotExist) {
+	if err := argsCoverBy(t, t.TempDir(), nil, (&goTests{}).run,
+		&out); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("no profile: %v", err)
 	}
-	if err := coverBy(t.TempDir(), nil,
-		(&goTests{profile: "nonsense\n", mode: shutFile}).run, noFetch,
-		&out,
-		&errs); !errors.Is(err, errProfile) {
+	if err := argsCoverBy(t, t.TempDir(), nil,
+		(&goTests{profile: "nonsense\n", mode: shutFile}).run,
+		&out); !errors.Is(err, errProfile) {
 		t.Errorf("a bad profile: %v", err)
 	}
 	full := t.TempDir()
@@ -217,13 +196,15 @@ func TestCoverGoRefusesWhatItCannotReport(t *testing.T) {
 		shutFile); err != nil {
 		t.Fatal(err)
 	}
-	if err := coverBy(full, nil, (&goTests{}).run, noFetch, &out,
-		&errs); err == nil {
+	if err := argsCoverBy(t, full, nil, (&goTests{}).run,
+		&out); err == nil {
 		t.Error("a file where bin/ goes was taken")
 	}
-	if err := coverBy(t.TempDir(), []string{"rust"}, (&goTests{}).run,
-		noFetch, &out, &errs); err == nil ||
-		!strings.Contains(err.Error(), "not c or xcode") {
-		t.Errorf("rust: %v", err)
+	for _, word := range []string{"rust", "c", "xcode"} {
+		if err := argsCoverBy(t, t.TempDir(), []string{word},
+			(&goTests{}).run, &out); err == nil ||
+			!strings.Contains(err.Error(), "takes none") {
+			t.Errorf("%s: %v", word, err)
+		}
 	}
 }

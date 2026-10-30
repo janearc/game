@@ -30,6 +30,25 @@ func TestMain(suite *testing.M) {
 	if os.Getenv(asMain) == "1" {
 		main()
 	}
+	// pzm reads ~/.config/game/config for its own settings, so a test
+	// that reaches pzm must not reach the real one. the child above is given
+	// its HOME by its parent.
+	// it sits in the user cache folder and not in $TMPDIR: the stop tests
+	// need a HOME that is not under the system temp folders.
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		panic(err)
+	}
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		panic(err)
+	}
+	quiet, err := os.MkdirTemp(cache, "game-home-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", quiet)
 	neverWords = testNeverWords
-	os.Exit(suite.Run())
+	code := suite.Run()
+	os.RemoveAll(quiet)
+	os.Exit(code)
 }

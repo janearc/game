@@ -1,0 +1,29 @@
+author: ""
+words: ""
+license: ""
+exclude: ["DESIGN.md" "NOTICE" "CHANGELOG.md"]
+omit: []
+patches: []
+theirs: []
+rapid: "0"
+cover floor: "0"
+cover allowed: []
+set: []
+road: []
+dist: []
+lint: ["width" "80"]
+lint: ["rows" "25"]
+lint: ["comments"]
+lint: ["print"]
+lint: ["exclaim"]
+lint: ["shout"]
+lint: ["words" "hyperscaler" "enterprise-grade" "blazing-fast" "load-bearing"]
+lint: ["paragraph" "4"]
+lint: ["allow" "README.md" "rows"]
+run: ["known" "." "go" "run" "./cmd/libtheme" "known"]
+run: ["known" "." "go" "run" "./cmd/libtheme" "known" "--paint"]
+run: ["known" "." "go" "run" "./cmd/libtheme" "roundtrip"]
+run: ["visualdocs" "." "go" "run" "./cmd/visualdocs"]
+run: ["visualdocs-css" "." "go" "run" "./cmd/visualdocs" "--css"]
+run: ["visualdocs-go" "." "go" "run" "./cmd/visualdocs" "--go"]
+run: ["mocks" "." "go" "tool" "mockgen" "-write_package_comment=false" "-destination" "internal/mocks/host.go" "-package" "mocks" "github.com/janearc/libtheme-css/internal/host" "Files,File,Stopper"]

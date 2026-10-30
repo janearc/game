@@ -9,18 +9,6 @@ numbers:
     kind: picked
     by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the rule was written
 
-  - name: hook-budget-chars
-    value: 10000
-    says: the most characters a hook delivers whole, the budget help-claude fits in
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
-
-  - name: leaks-asks-before-leaks
-    value: 3
-    says: the asks a leaks run makes before leaks itself, the sdk, the sanitizer build, and its run
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
-
   - name: release-check-asks
     value: 4
     says: the asks a release check makes, go env, gofmt, vet, and the test
@@ -56,18 +44,6 @@ numbers:
     says: the width of a line wider than the rule of forty the member-rules test sets
     kind: picked
     by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the test was written
-
-  - name: semgrep-finding-line
-    value: 7
-    says: the line the semgrep fixture's finding is on, as its start.line holds
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
-
-  - name: diag-finding-line
-    value: 12
-    says: the line the analyzer fixture's warning is on, as the diagnostic's text holds
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the fixture was written
 
   - name: gosec-finding-line
     value: 10
@@ -153,18 +129,6 @@ numbers:
     kind: picked
     by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
 
-  - name: drawn-most-sources
-    value: 5
-    says: the most sources a drawn build-c argv holds
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
-
-  - name: fuzz-c-steps
-    value: 3
-    says: the calls a fuzz or race of c makes, the sdk, the build and the run
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the verb was written
-
   - name: some-checks
     value: 5
     says: a rapid checks count the tests give, past one so it is seen in the go test line
@@ -186,24 +150,6 @@ numbers:
   - name: drawn-most-statements
     value: 50
     says: the most statements a drawn file holds
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
-
-  - name: cover-c-steps
-    value: 4
-    says: the calls a c coverage run makes, the build, the run, the merge and the export
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the verb was written
-
-  - name: cover-xcode-steps
-    value: 2
-    says: the calls an xcode coverage run makes, the test run and xccov
-    kind: picked
-    by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a, where the verb was written
-
-  - name: drawn-most-test-words
-    value: 4
-    says: the most words a drawn test command holds
     kind: picked
     by: picker recorded in this file at c262418d8b9118725c39fe3b5a050e6ab834795a
 

@@ -18,16 +18,31 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/janearc/game/internal/count"
 )
 
-// dirOf is where a stack keeps a member's patches when .game names no other
-// place: patches/NAME.
-func dirOf(root, member string) string {
-	return filepath.Join(root, "patches", member)
+// Places is where a member's patches may be, from the stack's root and
+// slash-separated: patches/NAME first, then NAME under each directory
+// .game names, in the order named. game patch reads them from disk and
+// game release stack from the stack's commit, by this one rule.
+func Places(dirs []string, member string) []string {
+	places := []string{path.Join("patches", member)}
+	for _, dir := range dirs {
+		under := filepath.ToSlash(dir)
+		places = append(places, path.Join(under, member))
+	}
+	return places
+}
+
+// Twice is the refusal for a member whose patches are in two places,
+// naming both. which came first would be a guess.
+func Twice(member, first, second string) error {
+	return fmt.Errorf("%s's patches are in both %s and %s; "+
+		"keep them in one place", member, first, second)
 }
 
 // find is the patches a member has. They are read from the one place they
@@ -46,14 +61,14 @@ func find(
 ) ([]string, error) {
 	var found []string
 	var patches []string
-	for _, dir := range append([]string{dirOf(root, member)},
-		under(root, dirs, member)...) {
+	for _, place := range Places(dirs, member) {
+		dir := filepath.Join(root, filepath.FromSlash(place))
 		held, err := patchesIn(dir)
 		if err != nil {
 			return nil, err
 		}
 		if count.Positive(len(held)) {
-			found = append(found, dir)
+			found = append(found, place)
 			patches = held
 		}
 	}
@@ -62,27 +77,7 @@ func find(
 	}
 	first := found[count.First]
 	second := found[count.Next(count.First)]
-	return nil, fmt.Errorf("patch: %s's patches are in both %s and %s; "+
-		"keep them in one place", member, inStack(root, first),
-		inStack(root, second))
-}
-
-// inStack is a place as the stack names it, from its root, the way game
-// release stack names it.
-func inStack(root, place string) string {
-	// place is root joined with more, both absolute, so Rel has nothing to
-	// refuse.
-	rel, _ := filepath.Rel(root, place)
-	return filepath.ToSlash(rel)
-}
-
-// under is NAME under each directory .game names, in the order named.
-func under(root string, dirs []string, member string) []string {
-	places := make([]string, count.Nothing, len(dirs))
-	for _, dir := range dirs {
-		places = append(places, filepath.Join(root, dir, member))
-	}
-	return places
+	return nil, fmt.Errorf("patch: %w", Twice(member, first, second))
 }
 
 // Series lists a member's patches from the directory find gives. they

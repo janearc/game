@@ -38,45 +38,24 @@ func groupOf(pid int) (int, error) {
 	return -pid, nil
 }
 
-// Signals is the signals a stopped command's group is sent. System sends
-// them for real. Tests give a mock, so that a test of what is refused
-// never signals anything.
-type Signals interface {
-	// Kill sends the signal to the pid, as kill(2) does: a negative pid
-	// is a process group.
-	Kill(pid int, sig syscall.Signal) error
-}
-
-// system sends signals with kill(2).
-type system struct{}
-
-// Kill sends the signal.
-func (system) Kill(pid int, sig syscall.Signal) error {
-	return syscall.Kill(pid, sig)
-}
-
-// System is the signals of this machine, which are sent for real.
-func System() Signals { return system{} }
-
-// leader is a command that leads a group of its own, and the signals it is
-// stopped with.
+// leader is a command that leads a group of its own.
 type leader struct {
-	cmd     *exec.Cmd
-	signals Signals
+	cmd *exec.Cmd
 }
 
-// cancel stops the group the command leads, and says why when it is
-// refused one to stop. It is what exec.Cmd calls when the command's
-// context is done.
+// cancel stops the group the command leads with SIGKILL, sent by kill(2),
+// and says why when it is refused one to stop. A refused pid is given the
+// pid no process has, so the signal reaches nothing. It is what exec.Cmd
+// calls when the command's context is done.
 func (lead leader) cancel() error {
 	group, refused := groupOf(lead.cmd.Process.Pid)
-	killed := lead.signals.Kill(group, syscall.SIGKILL)
+	killed := syscall.Kill(group, syscall.SIGKILL)
 	return errors.Join(refused, killed)
 }
 
 // Leading makes the command lead a group of its own. Stopping it by its
-// context then stops the group with the signals given.
-func Leading(cmd *exec.Cmd, signals Signals) {
+// context then stops the group.
+func Leading(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = leader{cmd: cmd, signals: signals}.cancel
+	cmd.Cancel = leader{cmd: cmd}.cancel
 }

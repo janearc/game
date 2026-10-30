@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"math"
 	"os"
 	"os/exec"
 	"strconv"
@@ -12,8 +11,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"go.uber.org/mock/gomock"
 
 	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/procgroup"
@@ -28,7 +25,6 @@ const (
 	ownGroup    = 0                     // defined by kill(2): pid 0 is the caller's own group
 	everyone    = -1                    // defined by kill(2): pid -1 is every process there is
 	lowestPid   = 2                     // defined here: the lowest pid that may lead a group
-	noProcess   = math.MaxInt32         // defined here: a pid no process has
 	exitedWith  = 3                     // defined here: what the command that exits on its own exits with
 )
 
@@ -88,7 +84,7 @@ func TestStoppingACommandStopsWhatItStarted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", parent)
-	procgroup.Leading(cmd, procgroup.System())
+	procgroup.Leading(cmd)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +115,7 @@ func TestACommandThatExitsOnItsOwnIsUnaffected(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", "echo said; exit 3")
-	procgroup.Leading(cmd, procgroup.System())
+	procgroup.Leading(cmd)
 	out, err := cmd.Output()
 	var exited *exec.ExitError
 	if string(out) != "said\n" || !errors.As(err, &exited) ||
@@ -131,33 +127,21 @@ func TestACommandThatExitsOnItsOwnIsUnaffected(t *testing.T) {
 	}
 }
 
-// stopped is a command that was started as pid and is stopped with the
-// signals given. nothing was started: the process is only the pid.
-func stopped(pid int, signals procgroup.Signals) error {
+// stopped is a command that was started as pid and is stopped. nothing
+// was started: the process is only the pid.
+func stopped(pid int) error {
 	cmd := exec.Command("true")
-	procgroup.Leading(cmd, signals)
+	procgroup.Leading(cmd)
 	cmd.Process = &os.Process{Pid: pid}
 	return cmd.Cancel()
 }
 
-// stopping a command that leads a group signals the group with SIGKILL.
-// the group is the leader's pid made negative. nothing else is signalled.
-func TestAGroupIsSignalledByItsLeadersPid(t *testing.T) {
-	signals := NewMockSignals(gomock.NewController(t))
-	signals.EXPECT().Kill(-lowestPid, syscall.SIGKILL).Return(nil)
-	if err := stopped(lowestPid, signals); err != nil {
-		t.Errorf("stopping pid %d: %v", lowestPid, err)
-	}
-}
-
 // pids that cannot lead a group are refused and say so. what is signalled
-// is a pid no process has, so the signal reaches nothing. the mock is told
-// to expect exactly that. it signals nothing.
+// is a pid no process has, so the signal reaches nothing: kill(2) answers
+// that there is no such process.
 func refused(t *testing.T, pid int) {
 	t.Helper()
-	signals := NewMockSignals(gomock.NewController(t))
-	signals.EXPECT().Kill(noProcess, syscall.SIGKILL).Return(syscall.ESRCH)
-	err := stopped(pid, signals)
+	err := stopped(pid)
 	if err == nil || !strings.Contains(err.Error(), "no command's group") ||
 		!errors.Is(err, syscall.ESRCH) {
 		t.Errorf("stopping pid %d: %v", pid, err)

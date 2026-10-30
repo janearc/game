@@ -80,6 +80,14 @@ blossom drive, you can't really trust an agent to not include that somewhere,
 so you might add springfield and blossom to your sweep words. these are
 hashed, and you will not be able to pull them out through binary extraction.
 
+    cover 80
+
+the coverage floor for every project you build, as a percentage from 1 to
+100. `game check` fails any Go package under it. a project's own .game may
+say `cover M` with M at or above yours, and never below: game refuses a
+lower M and names both numbers and both files. with no `cover` line in
+either file there is no floor, and check does what it always did.
+
     license ~/roots/LICENSE.txt
 
 claude is *extremely* fussy about licenses. do this for them.
@@ -118,10 +126,23 @@ per line; game trees says which block it matched, or that none did.
     # testing using the `rapid` package
     rapid checks 1000 
 
+    # a floor of this project's own, at or above the one in your config
+    cover 90
+
+    # leave one file out of the floor. the reason is required, and game
+    # check prints every allowed file and its reason on every run, so an
+    # exemption is never quiet
+    cover allow internal/term/raw.go needs a real terminal, tested by hand
+
 ## 4. the daily verbs
 
     game check       gofmt -l, go vet, go test ./...; the exit code is
-                     the tests' own, never a pipe's
+                     the tests' own, never a pipe's. with a `cover`
+                     floor, each Go package is measured after the tests
+                     and one under the floor fails, with its first
+                     uncovered lines
+    game cover       the coverage report alone; --html writes the html
+                     report and prints where
     game build       every cmd/* into bin/, stamped with the commit and
                      the commit's time; the same sources build the same
                      bytes

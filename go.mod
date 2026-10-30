@@ -7,14 +7,13 @@ toolchain go1.27.0
 require (
 	github.com/go-git/go-billy/v5 v5.6.2
 	github.com/go-git/go-git/v5 v5.16.4
-	github.com/janearc/puzzlemouth v0.0.0-20261024032756-ee20b9a0f7de
+	github.com/janearc/puzzlemouth v0.1.2
 	go.uber.org/mock v0.6.0
 	pgregory.net/rapid v1.3.0
 )
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
-	github.com/BurntSushi/toml v0.3.1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/cloudflare/circl v1.6.1 // indirect
@@ -31,21 +30,10 @@ require (
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
-	go.uber.org/atomic v1.5.0 // indirect
-	go.uber.org/config v1.4.1 // indirect
-	go.uber.org/multierr v1.4.0 // indirect
-	go.uber.org/tools v0.0.0-20190618225709-2cfd321de3ee // indirect
 	golang.org/x/crypto v0.41.0 // indirect
-	golang.org/x/lint v0.0.0-20190930215403-16217165b5de // indirect
-	golang.org/x/mod v0.27.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
-	golang.org/x/tools v0.36.0 // indirect
-	golang.org/x/tools/go/expect v0.1.1-deprecated // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
-	honnef.co/go/tools v0.0.1-2019.2.3 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

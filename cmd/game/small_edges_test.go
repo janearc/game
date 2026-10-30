@@ -12,6 +12,7 @@ import (
 	"github.com/janearc/game/internal/count"
 
 	"github.com/janearc/game/internal/config"
+	"github.com/janearc/game/internal/lint"
 )
 
 // a failed command's error is what it said on stderr, or on stdout when
@@ -111,7 +112,7 @@ func TestLintExportedNeedsSomewhereToExport(t *testing.T) {
 	wide := strings.Repeat("x", countHeld(t, "past-width"))
 	work := freshTree(t, "x", map[string]string{"a.md": wide + "\n"})
 	forty := gamed(t, "lint width 40")
-	rules, err := described(forty)
+	rules, err := lint.Describe(forty.Lint())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestExportNeedsTar(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	if err := export(work, "HEAD", t.TempDir()); err == nil {
+	if err := export(work, "HEAD", t.TempDir(), exec.Command); err == nil {
 		t.Error("exported with no tar")
 	}
 }
@@ -186,7 +187,7 @@ func TestExportSaysWhatTarSaid(t *testing.T) {
 	t.Parallel()
 	work := freshTree(t, "x", map[string]string{"a": "a\n"})
 	nowhere := filepath.Join(t.TempDir(), "nowhere")
-	err := export(work, "HEAD", nowhere)
+	err := export(work, "HEAD", nowhere, exec.Command)
 	if err == nil || !strings.HasPrefix(err.Error(), "tar: ") ||
 		!strings.Contains(err.Error(), nowhere) {
 		t.Errorf("export to a directory that is not there: %v", err)
@@ -198,7 +199,7 @@ func TestExportSaysWhatTarSaid(t *testing.T) {
 func TestExportSaysWhatGitRefused(t *testing.T) {
 	t.Parallel()
 	work := freshTree(t, "x", map[string]string{"a": "a\n"})
-	err := export(work, "no-such-commit", t.TempDir())
+	err := export(work, "no-such-commit", t.TempDir(), exec.Command)
 	if err == nil || strings.HasPrefix(err.Error(), "tar: ") {
 		t.Errorf("a commit that is not there: %v, want git's refusal", err)
 	}

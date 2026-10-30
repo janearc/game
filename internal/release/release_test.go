@@ -416,6 +416,22 @@ func TestPrepareRefusesAMissingOrEmptyLicense(t *testing.T) {
 	}
 }
 
+// a release whose ref cannot be kept comes back with nothing: a ref under
+// the tag's name stands in the way.
+func TestPrepareReturnsNothingWhenItCannotKeepTheRef(t *testing.T) {
+	t.Parallel()
+	work, dist := fixture(t)
+	if _, err := work.Git("update-ref", "refs/game/release/v1/in-the-way",
+		"HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	options := release.For("x", dist, "v1").Swept(sworn, nil, nil)
+	res, err := release.Prepare(work, options)
+	if err == nil || res != nil {
+		t.Errorf("got %v and %v, want a refusal and no release", res, err)
+	}
+}
+
 // a diff against an empty dist is the whole tree.
 func TestDiffAgainstAnEmptyDistIsTheWholeTree(t *testing.T) {
 	t.Parallel()

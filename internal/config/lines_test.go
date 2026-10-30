@@ -1,11 +1,13 @@
 package config_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/janearc/game/internal/config"
 	"github.com/janearc/game/internal/count"
@@ -31,17 +33,17 @@ func TestEachLineIsRefusedInItsOwnWords(t *testing.T) {
 		{"a stack in the dotfile", "stack a main\n", true,
 			"a stack is a repository's"},
 		{"a stack with no ref", "stack a\n", false,
+			"stack: this key takes 2 to 3 words, and this line has 1"},
+		{"a stack with a third word that is not theirs",
+			"stack a main mine\n", false,
 			"stack wants \"stack NAME REF\""},
-		{"needs with no reason", "needs TOKEN\n", false,
-			"needs wants \"needs NAME why it is needed\""},
-		{"set with no value", "set TOKEN\n", true,
-			"set wants \"set NAME value\""},
 		{"a target with no command", "target build . ::\n", false,
-			"target wants \"target NAME DIR :: COMMAND ...\""},
-		{"a target with no directory", "target build\n", false,
-			"target wants"},
-		{"sweep with too little", "sweep allow a.md\n", false,
-			"sweep wants allow FILE KIND"},
+			"target: this key takes a tail after \"::\""},
+		{"a target with no command or directory", "target build\n", false,
+			"target: this key takes a tail after \"::\""},
+		{"a target with a command and no directory",
+			"target build :: go build\ntarget build x y :: go build\n",
+			false, "target: this key takes 1 to 2 words"},
 		{"sweep that is not allow", "sweep a.md b.md emails\n", false,
 			"sweep wants allow FILE KIND"},
 		{"sweep of an unknown kind", "sweep allow a.md nonsense\n",
@@ -56,11 +58,30 @@ func TestEachLineIsRefusedInItsOwnWords(t *testing.T) {
 			"lint allow a.md nonsense width\n", false,
 			"unknown lint \"nonsense\""},
 		{"a key with no value", "author\n", true,
-			"want \"key value\", got \"author\""},
+			"author: this key takes at least 1 word, and this line has 0"},
 	} {
 		_, err := parsed(line.src, line.dotfile)
 		if err == nil || !strings.Contains(err.Error(), line.want) {
 			t.Errorf("%s: %v, want %q", line.name, err, line.want)
+		}
+	}
+}
+
+// TestPzmRefusesALineBeforeGameReadsIt: the words on a line are counted
+// by pzm, once, so a line with too few, or a key said twice, is refused
+// in pzm's words, and a pair of quotes may not change the count.
+func TestPzmRefusesALineBeforeGameReadsIt(t *testing.T) {
+	for src, want := range map[string]string{
+		"needs TOKEN\n":        "needs: this key takes at least 2 words",
+		"set TOKEN\n":          "set: this key takes at least 2 words",
+		"sweep allow a.md\n":   "sweep: this key takes at least 3 words",
+		"author \" a \"\n":     "change how many words it has",
+		"author a\nauthor b\n": "author: this key is on one line at most",
+		"author\nname a b\n":   "the.file:2: name: this key takes 1 word",
+	} {
+		_, err := parsed(src, true)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", src, err, want)
 		}
 	}
 }
@@ -298,16 +319,18 @@ func TestStrictestTakesAllowancesAsTheyCome(t *testing.T) {
 	}
 }
 
-// TestAnEqualsSignKeepsASpacedValue: "key=value with spaces" is the key
-// before the equals sign and everything after it. the spaces in the
-// value are not where the key ends.
-func TestAnEqualsSignKeepsASpacedValue(t *testing.T) {
-	got, err := parsed("author=Ada Byron\n", false)
-	if err != nil {
-		t.Fatal(err)
+// TestAnEqualsSignWithNoSpacesIsPartOfTheKey: pzm reads "key=value" as
+// one word, which is no key. game used to take the key before the equals
+// sign. a lone equals sign after the key is still read as nothing.
+func TestAnEqualsSignWithNoSpacesIsPartOfTheKey(t *testing.T) {
+	_, err := parsed("author=Ada Byron\n", false)
+	if err == nil || !strings.Contains(err.Error(),
+		"author=Ada: this is not a key") {
+		t.Errorf("author=Ada Byron: %v, want it refused", err)
 	}
-	if got.Author() != "Ada Byron" {
-		t.Errorf("author read as %q, want Ada Byron", got.Author())
+	got, err := parsed("author = Ada Byron\n", false)
+	if err != nil || got.Author() != "Ada Byron" {
+		t.Errorf("author = Ada Byron: %q, %v", got.Author(), err)
 	}
 }
 
@@ -320,6 +343,60 @@ func TestASpaceBeforeAnEqualsSignEndsTheKey(t *testing.T) {
 	}
 	if got.Author() != "Ada=Byron" {
 		t.Errorf("author read as %q, want Ada=Byron", got.Author())
+	}
+}
+
+// TestAKeyIsLowercase: pzm does not lowercase keys, as game used to.
+func TestAKeyIsLowercase(t *testing.T) {
+	_, err := parsed("Author Ada\n", false)
+	if err == nil || !strings.Contains(err.Error(),
+		"the.file:1: Author: this is not a key") {
+		t.Errorf("Author Ada: %v, want it refused", err)
+	}
+}
+
+// TestABlockIsIndentedOneWay: tabs and spaces are each a block's indent,
+// but a block that changes from one to the other is refused.
+func TestABlockIsIndentedOneWay(t *testing.T) {
+	cfg, err := parsed("project a\n  road a.git\n   dist d.git\n", true)
+	if err != nil || cfg.Remotes(true)["a"] != "d.git" {
+		t.Errorf("spaces of different widths: %v, %v", cfg.Remotes(true), err)
+	}
+	_, err = parsed("project a\n\troad a.git\n  dist d.git\n", true)
+	if err == nil || !strings.Contains(err.Error(),
+		"the.file:3: dist: it is indented with spaces, but this block "+
+			"is indented with tabs") {
+		t.Errorf("tabs then spaces: %v, want it refused", err)
+	}
+}
+
+// TestAFileThatCannotBeReadIsRefused: a reader that fails is the
+// failure, and nothing is read from it.
+func TestAFileThatCannotBeReadIsRefused(t *testing.T) {
+	var cfg config.Config
+	failed := errors.New("the disk went")
+	err := cfg.Parse(iotest.ErrReader(failed), "f", "/h", true)
+	if !errors.Is(err, failed) {
+		t.Errorf("a failing reader: %v", err)
+	}
+}
+
+// TestEveryLineThatCannotStandIsNamed: a file with several bad lines is
+// refused with all of them, in the order of their lines. pzm's lines
+// come first, and game's only once pzm has read the whole file.
+func TestEveryLineThatCannotStandIsNamed(t *testing.T) {
+	_, err := parsed("lint dance\ncover ten\nlint allow a.md\n", false)
+	if err == nil {
+		t.Fatal("bad lines were read")
+	}
+	last := -1
+	for _, want := range []string{"the.file:1: lint:", "the.file:2: cover:",
+		"the.file:3: lint:"} {
+		at := strings.Index(err.Error(), want)
+		if at <= last {
+			t.Errorf("%q is not after the line before it in\n%v", want, err)
+		}
+		last = at
 	}
 }
 

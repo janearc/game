@@ -1,0 +1,24 @@
+# a .game that says every key a .game may say.
+name thing
+author Ada
+words ~/ignored.txt
+exclude vendor/
+omit dist/
+stack puzzlemouth main
+stack crush v0.98.1 theirs
+patches shared/patches
+patches ./other/patches/
+needs CONTACT a name and email the providers can reach
+needs REGION where it runs
+sweep allow README.md emails
+sweep allow README.md author word
+lint width 72
+lint allow a.md width
+lint allow b.md rows paragraph
+cover 90
+cover allow cmd/thing/main.go needs a real terminal
+rapid checks 1000
+target mocks . :: go run example.invalid/mockgen -destination x.go
+target mocks ~/there :: ~/bin/step two
+target quick :: go build
+run known . :: go run ./cmd/thing known

@@ -47,7 +47,7 @@ type Options struct {
 	patches []string
 	// qualifier is asked about a stack before its ref is written. Nil
 	// asks no one.
-	qualifier Qualifier
+	qualifier func(Stacked) error
 }
 
 // For is a release of the project name to dist at tag, with nothing
@@ -177,60 +177,74 @@ func (diff Difference) Hits() []sweep.Hit { return diff.hits }
 
 // Diff shows what a push would change on dist. it reports sweep hits
 // instead of refusing.
-func Diff(here repo.Repo, asked Options) (Difference, error) {
-	var diff Difference
+func Diff(here repo.Repo, asked Options) (*Difference, error) {
 	tree, parent, err := plan(here, asked)
 	if err != nil {
-		return diff, err
+		return nil, err
 	}
-	diff.tree, diff.parent = tree, parent
 	from := parent
 	if from == "" {
 		// the empty tree is asked of git rather than typed from memory.
 		if from, err = here.Git(
 			"hash-object", "-t", "tree", os.DevNull,
 		); err != nil {
-			return diff, err
+			return nil, err
 		}
 	} else if had, _ := here.Tree(parent); had == tree {
-		diff.same = true
-		return diff, nil
+		same := NewDifference(tree, parent, "", "", true, nil)
+		return &same, nil
 	}
-	if diff.stat, err = here.Git("diff", "--stat", from, tree); err != nil {
-		return diff, err
+	stat, err := here.Git("diff", "--stat", from, tree)
+	if err != nil {
+		return nil, err
 	}
-	if diff.patch, err = here.Git("diff", from, tree); err != nil {
-		return diff, err
+	patch, err := here.Git("diff", from, tree)
+	if err != nil {
+		return nil, err
 	}
-	if diff.hits, err = sweep.Tree(
+	hits, err := sweep.Tree(
 		here, tree, asked.never, asked.author, asked.allow,
 		asked.exclude...,
-	); err != nil {
-		return diff, err
+	)
+	if err != nil {
+		return nil, err
 	}
-	return diff, nil
+	diff := NewDifference(tree, parent, stat, patch, false, hits)
+	return &diff, nil
+}
+
+// NewDifference is the difference between dist, whose main is parent
+// (empty when dist has nothing yet), and tree: its stat, its patch and the
+// sweep's hits. same is that dist already has the tree.
+func NewDifference(tree, parent, stat, patch string, same bool,
+	hits []sweep.Hit) Difference {
+	return Difference{tree: tree, parent: parent, stat: stat, patch: patch,
+		same: same, hits: hits}
 }
 
 // Prepare makes the release commit and keeps it at ref(tag) for its push.
 // it refuses if the sweep finds anything.
-func Prepare(here repo.Repo, asked Options) (Result, error) {
+func Prepare(here repo.Repo, asked Options) (*Result, error) {
 	var res Result
 	if err := preparable(here, asked); err != nil {
-		return res, err
+		return nil, err
 	}
 	tree, current, err := plan(here, asked)
 	if err != nil {
-		return res, err
+		return nil, err
 	}
 	res.tree, res.parent = tree, current
 	if err := flatCommit(here, asked, &res); err != nil {
-		return res, err
+		return nil, err
 	}
 	if err := refuseRelease(here, asked, &res); err != nil {
-		return res, err
+		return nil, err
 	}
 	_, err = here.Git("update-ref", ref(asked.tag), res.commit)
-	return res, err
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 // preparable checks for a tag, never-words and a clean tree.
@@ -352,11 +366,11 @@ const Guard = "GAME_RELEASE_PUSH=1"
 // refuses if dist's main has changed since the release was prepared. It
 // refuses a dist that cannot take both refs at once. It refuses when this
 // repository has a tag of that name and leaves that tag as it is.
-func Push(here repo.Repo, asked Options) (Result, error) {
+func Push(here repo.Repo, asked Options) (*Result, error) {
 	var res Result
 	commit, err := here.Git("rev-parse", "--verify", "-q", ref(asked.tag))
 	if err != nil || commit == "" {
-		return res, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"no prepared release %s; run game release %s first",
 			asked.tag,
 			asked.tag,
@@ -365,11 +379,11 @@ func Push(here repo.Repo, asked Options) (Result, error) {
 	res.commit = commit
 	current, err := here.RemoteMain(asked.dist)
 	if err != nil {
-		return res, err
+		return nil, err
 	}
 	parent, _ := here.Git("rev-parse", "--verify", "-q", commit+"^")
 	if current != "" && current != commit && current != parent {
-		return res, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"dist's main moved since %s was prepared; "+
 				"run game release %s again",
 			asked.tag,
@@ -377,13 +391,13 @@ func Push(here repo.Repo, asked Options) (Result, error) {
 		)
 	}
 	if err := tagFree(here, asked.tag); err != nil {
-		return res, err
+		return nil, err
 	}
 	note := message(asked.name, asked.tag) + "\n"
 	if _, err := here.GitIn(
 		note, "tag", "-a", asked.tag, commit, "-F", "-",
 	); err != nil {
-		return res, err
+		return nil, err
 	}
 	defer here.Git("tag", "-d", asked.tag)
 	refs := []string{"refs/tags/" + asked.tag}
@@ -393,8 +407,10 @@ func Push(here repo.Repo, asked Options) (Result, error) {
 		refs = append([]string{commit + ":refs/heads/main"}, refs...)
 	}
 	args := append([]string{"push", "--atomic", asked.dist}, refs...)
-	_, err = here.GitEnv([]string{Guard}, args...)
-	return res, err
+	if _, err = here.GitEnv([]string{Guard}, args...); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 // tagFree refuses a tag name this repository already has. Push makes a
@@ -419,9 +435,11 @@ func describe(hits []sweep.Hit) string {
 	return strings.Join(parts, "; ")
 }
 
-// Qualifying is the options with who a stack is shown to. The stack is
-// shown before its ref is written.
-func (asked Options) Qualifying(qualifier Qualifier) Options {
+// Qualifying is the options with who a stack is shown to: a function
+// asked about the stack once it is assembled and swept, and before its
+// ref is written. Any error from it refuses the stack. The ref an earlier
+// stack left at the same tag stays as it was.
+func (asked Options) Qualifying(qualifier func(Stacked) error) Options {
 	asked.qualifier = qualifier
 	return asked
 }

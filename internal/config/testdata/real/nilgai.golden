@@ -1,0 +1,23 @@
+author: ""
+words: ""
+license: ""
+exclude: []
+omit: []
+patches: []
+theirs: []
+rapid: "0"
+cover floor: "0"
+cover allowed: []
+set: []
+road: []
+dist: []
+lint: ["width" "80"]
+lint: ["rows" "25"]
+lint: ["comments"]
+lint: ["print"]
+lint: ["exclaim"]
+lint: ["shout"]
+lint: ["words" "hyperscaler" "enterprise-grade" "blazing-fast" "load-bearing"]
+lint: ["paragraph" "4"]
+lint: ["allow" "README.md" "words" "paragraph" "rows"]
+sweep: ["README.md" "emails"]

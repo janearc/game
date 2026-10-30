@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"io"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/janearc/game/internal/count"
-	"go.uber.org/mock/gomock"
 )
 
 func TestMissingReleaseTagUsesPlaceholder(t *testing.T) {
@@ -23,7 +23,7 @@ func TestMissingReleaseTagUsesPlaceholder(t *testing.T) {
 func TestReleaseValuesIncludeEachConfiguredValue(t *testing.T) {
 	t.Parallel()
 	cfg := dotted(t, "set ONE first", "set TWO second")
-	got := values(cfg)
+	got := slices.Collect(maps.Values(cfg.Set()))
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"first", "second"}) {
 		t.Fatalf("release values changed: %v", got)
@@ -40,61 +40,14 @@ func TestMutantOptionsReadRepeatSelection(t *testing.T) {
 	}
 }
 
-func TestHardenRejectsTruncatedMachHeader(t *testing.T) {
+func TestHardenStopsAtSourceFailure(t *testing.T) {
 	t.Parallel()
-	found := headerFindings("MH_MAGIC_64 ARM64", "bin/sample")
-	if len(found) != count.One || found[count.First].Text() != errNoHeader.Error() {
-		t.Fatalf("truncated Mach header accepted: %v", found)
-	}
-}
-
-func TestHardenMachKeepsToolFailures(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("inspection refused")
-	gomock.InOrder(
-		commands.EXPECT().Run(dir, otool, "-hv", "bin/sample").Return("", failure),
-		commands.EXPECT().Run(dir, otool, "-l", "bin/sample").Return("", failure),
-		commands.EXPECT().Run(dir, "codesign", "-d", "--entitlements", "-",
-			"bin/sample").Return("", failure),
-		commands.EXPECT().Run(dir, shell, "-c",
-			`exec codesign -d -vv -- "$1" 2>&1`, shell, "bin/sample").Return("", failure),
-	)
-	found := hardenOne(commands.Run, dir, "bin/sample")
-	if len(found) != count.Next(count.One) ||
-		!strings.Contains(found[count.First].Text(), "otool -hv: inspection refused") ||
-		found[count.Next(count.First)].Text() != "not codesigned" {
-		t.Fatalf("inspection failures lost: %v", found)
-	}
-}
-
-func TestHardenXcodeStopsAtSourceFailure(t *testing.T) {
-	t.Parallel()
-	commands := NewMockcommandRunner(gomock.NewController(t))
+	commands := notRun(t)
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "broken.go"), "package {\n")
-	err := hardenXcodeBy(dir, []string{"-scheme", "Sample"}, commands.Run,
-		io.Discard, io.Discard)
+	err := argsHardenBy(t, dir, nil, commands, io.Discard)
 	if err == nil {
-		t.Fatal("xcode audit accepted unparseable source")
-	}
-}
-
-func TestHardenXcodeStopsAtSettingsFailure(t *testing.T) {
-	standTools(t, "semgrep")
-	dir := t.TempDir()
-	commands := NewMockcommandRunner(gomock.NewController(t))
-	failure := errors.New("settings refused")
-	gomock.InOrder(
-		commands.EXPECT().Run(dir, gomock.Any(), "--json", "--config", "auto", ".").
-			Return(`{"results":[]}`, nil),
-		commands.EXPECT().Run(dir, xcodeBuilder, gomock.Any()).Return("", failure),
-	)
-	err := hardenXcodeBy(dir, []string{"-scheme", "Sample"}, commands.Run,
-		io.Discard, io.Discard)
-	if !errors.Is(err, failure) {
-		t.Fatalf("settings failure lost: %v", err)
+		t.Fatal("audit accepted unparseable source")
 	}
 }
 
@@ -102,10 +55,10 @@ func TestHardenBuildStopsBeforeAuditingFailedBuild(t *testing.T) {
 	t.Parallel()
 	work := repoAt(t.TempDir())
 	write(t, work.Path("cmd", "sample", "main.go"), "package main\n")
-	commands := NewMockcommandRunner(gomock.NewController(t))
 	failure := errors.New("build refused")
-	commands.EXPECT().Run(work.Dir(), "go", gomock.Any()).Return("", failure)
-	found, err := hardenBuilt(work, blankConfig(), commands.Run, io.Discard)
+	commands := runs(t, ranStep{dir: work.Dir(), name: "go", anyArgs: true,
+		err: failure})
+	found, err := hardenBuilt(work, blankConfig(), commands, io.Discard)
 	if !errors.Is(err, failure) || len(found) != count.Nothing {
 		t.Fatalf("failed build was audited: %v %v", found, err)
 	}

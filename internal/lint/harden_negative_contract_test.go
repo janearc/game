@@ -38,11 +38,12 @@ func TestHardenLeavesLookalikePackagesAlone(t *testing.T) {
 	}
 }
 
-func TestNativeFindingsHaveSourceLineNumbers(t *testing.T) {
+func TestFindingsHaveSourceLineNumbers(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	writeGo(t, dir, "privilege.c", "void f(void) { setuid(0); }\n"+
-		"void g(void) { setgid(0); }\n")
+	writeGo(t, dir, "privilege.go", "package main\nimport \"syscall\"\n"+
+		"func f() { syscall.Setuid(0) }\n"+
+		"func g() { syscall.Setgid(0) }\n")
 	found, err := lint.Hardened(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +52,7 @@ func TestNativeFindingsHaveSourceLineNumbers(t *testing.T) {
 		t.Fatalf("findings %v", found)
 	}
 	for index, finding := range found {
-		want := count.Next(index)
+		want := count.Next(count.Next(count.Next(index)))
 		if lineOf(finding) != want {
 			t.Errorf("finding %d has line %d, want %d", index, lineOf(finding), want)
 		}

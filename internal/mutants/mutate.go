@@ -210,15 +210,17 @@ func (walk *walker) record(shown, at ast.Node, made change) {
 	made.apply()
 	line := walk.fileSet.Position(at.Pos()).Line
 	source := walk.render(walk.file)
-	walk.mutants = append(walk.mutants, Mutant{
-		file:     walk.rel,
-		function: walk.function,
-		line:     line,
-		before:   before,
-		after:    walk.oneLine(shown),
-		source:   []byte(source),
-	})
+	walk.mutants = append(walk.mutants, NewMutant(walk.rel, walk.function,
+		line, before, walk.oneLine(shown), []byte(source)))
 	made.undo()
+}
+
+// NewMutant is the mutant that changes before to after on that line of
+// that function of that file. source is the changed file's whole source.
+func NewMutant(file, function string, line int, before, after string,
+	source []byte) Mutant {
+	return Mutant{file: file, function: function, line: line,
+		before: before, after: after, source: source}
 }
 
 // pop leaves the node last entered.

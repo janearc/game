@@ -24,7 +24,6 @@ func bounced(t *testing.T) repo.Repo {
 // bounce reads what is staged unless given a range, says each line it
 // holds, and refuses them unless signed off.
 func TestBounceHoldsWhatNamesTheAuthor(t *testing.T) {
-	t.Parallel()
 	work := bounced(t)
 	cfg := dotted(t, "author Ada")
 	for _, each := range []struct {
@@ -35,7 +34,8 @@ func TestBounceHoldsWhatNamesTheAuthor(t *testing.T) {
 		{[]string{"HEAD~1..HEAD"}, "  +// Ada's call\n"},
 	} {
 		var out bytes.Buffer
-		err := bounceTo(work, cfg, each.args, false, &out)
+		t.Setenv("BOUNCE_OK", "")
+		err := verbTo(t, "bounce", bounceVerb, work, cfg, each.args, &out)
 		want := "bounce: the author in the third person, in added " +
 			"lines:\n" + each.line
 		if err == nil || !strings.HasPrefix(err.Error(), "refused.") ||
@@ -43,7 +43,9 @@ func TestBounceHoldsWhatNamesTheAuthor(t *testing.T) {
 			t.Errorf("%v: %v, said %q", each.args, err, out.String())
 		}
 		out.Reset()
-		if err := bounceTo(work, cfg, each.args, true, &out); err != nil ||
+		t.Setenv("BOUNCE_OK", "1")
+		err = verbTo(t, "bounce", bounceVerb, work, cfg, each.args, &out)
+		if err != nil ||
 			out.String() != want+"bounce: signed off (BOUNCE_OK); "+
 				"passing\n" {
 			t.Errorf("%v signed: %v, said %q", each.args, err,
@@ -55,20 +57,21 @@ func TestBounceHoldsWhatNamesTheAuthor(t *testing.T) {
 // with nothing that names the author, bounce passes and says nothing;
 // with no author it cannot look; a range git cannot read is the error.
 func TestBouncePassesOrSaysWhyNot(t *testing.T) {
-	t.Parallel()
 	work := bounced(t)
 	var out bytes.Buffer
-	if err := bounceTo(work, dotted(t, "author Grace"), nil, false,
+	t.Setenv("BOUNCE_OK", "")
+	if err := verbTo(t, "bounce", bounceVerb, work, dotted(t, "author Grace"), nil,
 		&out); err != nil || count.Positive(out.Len()) {
 		t.Errorf("nobody named: %v, said %q", err, out.String())
 	}
-	err := bounceTo(work, blankConfig(), nil, true, &bytes.Buffer{})
+	t.Setenv("BOUNCE_OK", "1")
+	err := verbTo(t, "bounce", bounceVerb, work, blankConfig(), nil, quiet)
 	if err == nil || !strings.HasPrefix(err.Error(),
 		"bounce needs an author") {
 		t.Errorf("no author: %v", err)
 	}
-	err = bounceTo(work, dotted(t, "author Ada"),
-		[]string{"nowhere..HEAD"}, true, &bytes.Buffer{})
+	err = verbTo(t, "bounce", bounceVerb, work, dotted(t, "author Ada"),
+		[]string{"nowhere..HEAD"}, quiet)
 	if err == nil {
 		t.Error("a range git cannot read passed")
 	}
@@ -80,11 +83,11 @@ func TestBounceIsSignedOffByBounceOK(t *testing.T) {
 	work := bounced(t)
 	cfg := dotted(t, "author Ada")
 	t.Setenv("BOUNCE_OK", "")
-	if err := bounceVerb(work, cfg, nil); err == nil {
+	if err := viaPzm(t, "bounce", bounceVerb, work, cfg, nil); err == nil {
 		t.Error("passed with no BOUNCE_OK")
 	}
 	t.Setenv("BOUNCE_OK", "1")
-	if err := bounceVerb(work, cfg, nil); err != nil {
+	if err := viaPzm(t, "bounce", bounceVerb, work, cfg, nil); err != nil {
 		t.Errorf("BOUNCE_OK=1: %v", err)
 	}
 }

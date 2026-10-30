@@ -115,42 +115,6 @@ func TestAntiLintSafeTLS(t *testing.T) {
 		"var c = tls.Config{InsecureSkipVerify: false}\n")
 }
 
-func TestAntiLintCComment(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "comment.c", "// setuid(0) is not a call\n")
-}
-
-func TestAntiLintCDirective(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "directive.c", "#define setuid(x) evil(x)\n")
-}
-
-func TestAntiLintSafeCChmod(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "chmod.c", "void f(void) { chmod(\"x\", 0644); }\n")
-}
-
-func TestAntiLintSafeSwiftPermission(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "perm.swift", "FileManager.default.createFile(atPath: p, "+
-		"contents: d, attributes: [.posixPermissions: 0o644])\n")
-}
-
-func TestAntiLintSafeSwiftProcess(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "proc.swift", "task.launchPath = \"/usr/bin/echo\"\n")
-}
-
-func TestAntiLintSafeCOpen(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "open.c", "void f(void) { open(\"x\", O_CREAT, 0644); }\n")
-}
-
-func TestAntiLintSafeNativeCall(t *testing.T) {
-	t.Parallel()
-	noHardening(t, "print.c", "void f(void) { printf(\"setuid\"); }\n")
-}
-
 func TestAntiLintMalformedGo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -238,9 +238,8 @@ func (rules *Lint) banning(args []string) error {
 	return nil
 }
 
-// testy returns true if the path is a test file: go's, or a C program's
-// named test_. Run skips test files unless Tests is set. a file of any
-// other language is no kind lint reads, so its tests are not named here.
+// testy returns true if the path is a test file: go's, or any file named
+// test_. Run skips test files unless Tests is set.
 func testy(path string) bool {
 	base := filepath.Base(path)
 	return strings.HasSuffix(base, "_test.go") ||
@@ -475,15 +474,13 @@ func (rules Lint) Run(dir string) ([]Finding, error) {
 	return rules.kept(out), nil
 }
 
+// every is the count regexp has defined as all the matches there are.
+const every = -1
+
 // file lints one file by its kind, less the findings on lines that say
-// noqa; a file of no kind has no findings. C, Objective-C and Swift are
-// of a kind to the harden rule alone.
+// noqa; a file of no kind has no findings.
 func (rules Lint) file(path, rel string) ([]Finding, error) {
-	switch {
-	case strings.HasSuffix(rel, ".go"), strings.HasSuffix(rel, ".md"):
-	case rules.harden && nativeSource(rel):
-		return hardenSource(path, rel)
-	default:
+	if !strings.HasSuffix(rel, ".go") && !strings.HasSuffix(rel, ".md") {
 		return nil, nil
 	}
 	src, err := os.ReadFile(path)

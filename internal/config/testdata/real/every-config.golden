@@ -1,0 +1,21 @@
+author: "Ada Byron"
+words: "/srv/ada/lists/sweep.words"
+license: "/srv/ada/licenses/apache.txt"
+exclude: ["spec-docs/" "internal/bridge/"]
+omit: ["scratch/"]
+patches: []
+theirs: []
+rapid: "50"
+cover floor: "80"
+cover allowed: []
+set: ["CONTACT=ada@example.com" "TOKEN=two words here"]
+road: ["alpha=/srv/ada/roots/alpha-road.git" "beta=../beta.git"]
+dist: ["alpha=https://example.invalid/alpha.git"]
+lint: ["width" "80"]
+lint: ["rows" "25"]
+lint: ["comments"]
+lint: ["words" "foo" "bar"]
+lint: ["allow" "README.md" "rows"]
+run: ["ghostty" "." "open" "-na" "build/app/T.app" "--args" "-e" "bin/daffy"]
+target: ["ghostty" "." "sh" "tools/toolchain"]
+target: ["ghostty" "/srv/ada/src/g" "/srv/ada/zig" "build" "-Doptimize=ReleaseFast"]

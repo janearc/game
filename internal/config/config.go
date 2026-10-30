@@ -6,15 +6,22 @@
 // each line is "key value" or "key = value". # starts a comment and ~ is
 // home. a "project NAME" line opens a block of indented lines.
 //
+// pzm reads the grammar into the file type declared in file.go: keys are
+// lowercase, a block is indented with tabs or with spaces and not both,
+// and a command follows " :: ". this package settles what lines mean.
+//
 // the sweep's word list comes from the dotfile only. lint lines in the
-// repository replace the dotfile's. an unknown key is an error naming the
-// file and line.
+// repository replace the dotfile's. a line that cannot stand is an error
+// naming the file, line and key, as file:line: key: why; a file with
+// several says them all.
 package config
 
 import (
-	"bufio"
+	"cmp"
+	"errors"
 	"fmt"
 	"github.com/janearc/game/internal/count"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,6 +73,11 @@ type Config struct {
 	// rapidChecks is how many checks a property test runs under game
 	// check. zero keeps the library's own default.
 	rapidChecks int
+	// floor is the builder's coverage floor, from the dotfile; own is the
+	// project's, from .game, never below floor. coverAllow is the files
+	// the project leaves out of the floor, with why.
+	floor, own floorLine
+	coverAllow map[string]string
 }
 
 // Author is the name the bounce refuses in the third person.
@@ -331,27 +343,23 @@ const allowWords = 3
 
 // allowance is one "lint allow FILE name..." line. it needs a file and at
 // least one lint.
-func allowance(path string, at int, words []string) (Rule, error) {
+func allowance(at line, words []string) (*Rule, error) {
 	if len(words) < allowWords {
-		return Rule{}, fmt.Errorf(
-			"%s:%d: lint allow wants a file and a lint, as in "+
+		return nil, at.errorf(
+			"lint allow wants a file and a lint, as in " +
 				"\"lint allow OPERATION.md paragraph\"",
-			path,
-			at,
 		)
 	}
 	for _, name := range words[third:] {
 		if !slices.Contains(rules, name) {
-			return Rule{}, fmt.Errorf(
-				"%s:%d: unknown lint %q; the lints are %s",
-				path,
-				at,
+			return nil, at.errorf(
+				"unknown lint %q; the lints are %s",
 				name,
 				strings.Join(rules, ", "),
 			)
 		}
 	}
-	return Rule{name: "allow", args: words[second:]}, nil
+	return &Rule{name: "allow", args: words[second:]}, nil
 }
 
 // union is every word from both lists, once, in first seen order.
@@ -372,26 +380,6 @@ func union(one, other []string) []string {
 // sweepKinds are the kinds of sweep hit a .game may declare it carries.
 var sweepKinds = []string{
 	"paths", "sessions", "uuids", "emails", "author", "word",
-}
-
-// keys is what a file may say. unknown keys are errors.
-var keys = []string{
-	"author",
-	"words",
-	"name",
-	"road",
-	"dist",
-	"exclude",
-	"omit",
-	"sweep",
-	"lint",
-	"target",
-	"run",
-	"needs",
-	"set",
-	"stack",
-	"patches",
-	"rapid",
 }
 
 // rules is the lint names game knows.
@@ -470,14 +458,14 @@ func named(fromGame, repo string) (name, by string) {
 	if fromGame != "" {
 		return fromGame, "the name line in .game"
 	}
-	if mod := module(repo); mod != "" {
+	if mod := Module(repo); mod != "" {
 		return last(mod), "go.mod's module " + mod
 	}
 	return filepath.Base(repo), "the directory's name"
 }
 
-// module is the path a tree's go.mod declares, or empty without one.
-func module(repo string) string {
+// Module is the path a tree's go.mod declares, or empty without one.
+func Module(repo string) string {
 	body, err := os.ReadFile(filepath.Join(repo, "go.mod"))
 	if err != nil {
 		return ""
@@ -557,112 +545,143 @@ func (cfg *Config) fold(path, home string, words bool) error {
 	return cfg.Parse(file, path, home, words)
 }
 
-// a line is one setting as Parse found it, with its file and number, the
-// project block it is in, whether this is the dotfile, and the home for ~.
+// a line is one setting as it was read, with its file and number, its
+// key, the project block it is in, whether this is the dotfile, the home
+// for ~, and the tail after " :: " for the keys that take one.
 type line struct {
 	path  string
 	at    int
+	key   string
 	open  string
 	words bool
 	home  string
+	tail  string
 }
 
-// errorf is an error at this line, named file:line first.
+// errorf is an error at this line, named file:line: key: first, as pzm
+// names the lines it refuses.
 func (at line) errorf(format string, args ...any) error {
 	return fmt.Errorf(
-		"%s:%d: "+format,
-		append([]any{at.path, at.at}, args...)...,
+		"%s:%d: %s: "+format,
+		append([]any{at.path, at.at, at.key}, args...)...,
 	)
 }
 
 // a setter reads one key's value into the config.
 type setter func(cfg *Config, at line, key, val string) error
 
-// setters is what each key does. project is not here. setLine handles it.
-var setters = map[string]setter{
-	"author":  setAuthor,
-	"license": setLicense,
-	"words":   setWords,
-	"name":    setName,
-	"road":    setRemote,
-	"dist":    setRemote,
-	"public":  setPublic,
-	"exclude": setExclude,
-	"omit":    setOmit,
-	"stack":   setStack,
-	"patches": setPatches,
-	"needs":   setNeeds,
-	"set":     setValue,
-	"target":  setTarget,
-	"run":     setTarget,
-	"sweep":   setSweep,
-	"lint":    setLint,
-	"rapid":   setRapid,
-}
-
-// Parse reads settings from a reader; path names it in errors.
+// Parse reads settings from a reader; path names it in errors. pzm reads
+// the file's grammar; what the lines mean is settled here, and every line
+// that cannot stand is named with the rest.
 func (cfg *Config) Parse(
-	from interface{ Read([]byte) (int, error) },
+	from io.Reader,
 	path, home string,
 	words bool,
 ) error {
-	sc := bufio.NewScanner(from)
-	at := line{path: path, words: words, home: home}
-	for sc.Scan() {
-		at.at++
-		raw := sc.Text()
-		text := strings.TrimSpace(raw)
-		if text == "" || strings.HasPrefix(text, "#") {
-			continue
-		}
-		// a project's lines are indented. the first unindented line
-		// ends the project block.
-		indented := strings.HasPrefix(raw, "\t") ||
-			strings.HasPrefix(raw, " ")
-		if !indented {
-			at.open = ""
-		}
-		if err := cfg.setLine(&at, text); err != nil {
-			return err
-		}
+	raw, err := io.ReadAll(from)
+	if err != nil {
+		return err
 	}
-	return sc.Err()
+	var got file
+	if err := schema.Read(path, raw, &got); err != nil {
+		return err
+	}
+	read := reading{
+		cfg: cfg, path: path, home: home, words: words,
+	}
+	read.fold(got)
+	slices.SortStableFunc(read.refused, func(one, other refusal) int {
+		return cmp.Compare(one.at, other.at)
+	})
+	var all []error
+	for _, one := range read.refused {
+		all = append(all, one.err)
+	}
+	return errors.Join(all...)
 }
 
-// setLine reads one setting. project opens a block and every other key
-// goes to its setter.
-func (cfg *Config) setLine(at *line, text string) error {
-	key, val, err := split(text)
-	if err != nil {
-		return at.errorf("%v", err)
+// reading is one file being folded into a config, and the lines it
+// refused.
+type reading struct {
+	cfg     *Config
+	path    string
+	home    string
+	words   bool
+	refused []refusal
+}
+
+// refusal is why one line was refused, and where it was.
+type refusal struct {
+	at  int
+	err error
+}
+
+// fold reads every line of the file into the config.
+func (read *reading) fold(got file) {
+	read.one("author", got.Author, "", setAuthor)
+	read.one("license", got.License, "", setLicense)
+	read.one("words", got.Words, "", setWords)
+	read.one("name", got.Name, "", setName)
+	read.each("road", got.Road, "", setRemote)
+	read.each("dist", got.Dist, "", setRemote)
+	read.each("public", got.Public, "", setPublic)
+	read.each("exclude", got.Exclude, "", setExclude)
+	read.each("omit", got.Omit, "", setOmit)
+	read.each("stack", got.Stack, "", setStack)
+	read.each("patches", got.Patches, "", setPatches)
+	read.each("needs", got.Needs, "", setNeeds)
+	read.each("set", got.Set, "", setValue)
+	read.each("target", got.Target, "", setTarget)
+	read.each("run", got.Run, "", setTarget)
+	read.each("sweep", got.Sweep, "", setSweep)
+	read.each("lint", got.Lint, "", setLint)
+	read.one("rapid", got.Rapid, "", setRapid)
+	read.each("cover", got.Cover, "", setCover)
+	for _, block := range got.Project {
+		read.project(block)
 	}
-	val = expand(val, at.home)
-	if at.open != "" && key != "road" && key != "dist" &&
-		key != "set" && key != "project" {
-		return at.errorf(
-			"%s is not a project's; a block holds "+
-				"road, dist and set, and %s belongs "+
-				"at the margin",
-			key,
-			key,
-		)
+}
+
+// each reads every line of a key that may be said more than once.
+func (read *reading) each(
+	key string, lines []spoken, open string, set setter,
+) {
+	for _, line := range lines {
+		read.one(key, line, open, set)
 	}
-	if key == "project" {
-		if err := cfg.openProject(*at, val); err != nil {
-			return err
-		}
-		at.open = val
-		return nil
+}
+
+// one reads a line, if the key was said, to its setter. the value has its
+// leading ~ turned into the home.
+func (read *reading) one(key string, said spoken, open string, set setter) {
+	if said.At == 0 {
+		return
 	}
-	set, known := setters[key]
-	if !known {
-		return at.errorf(
-			"unknown key %q; the keys are %s",
-			key,
-			strings.Join(keys, ", "),
-		)
+	at := line{
+		path: read.path, at: said.At, key: key, open: open,
+		words: read.words, home: read.home, tail: said.Tail,
 	}
-	return set(cfg, *at, key, val)
+	value := expand(said.Value, read.home)
+	if err := set(read.cfg, at, key, value); err != nil {
+		read.refused = append(read.refused, refusal{said.At, err})
+	}
+}
+
+// project reads a project's block: the dotfile's only. a repository says
+// which block is its own with name.
+func (read *reading) project(block project) {
+	at := line{
+		path: read.path, at: block.Name.At, key: "project",
+		words: read.words, home: read.home,
+	}
+	name := expand(block.Name.Value, read.home)
+	if err := read.cfg.openProject(at, name); err != nil {
+		read.refused = append(read.refused, refusal{at.at, err})
+		return
+	}
+	read.one("road", block.Road, name, setRemote)
+	read.one("dist", block.Dist, name, setRemote)
+	read.each("set", block.Set, name, setValue)
 }
 
 // openProject starts a project's block, in the dotfile only.
@@ -798,8 +817,7 @@ func setStack(cfg *Config, at line, _, val string) error {
 		)
 	}
 	words := strings.Fields(val)
-	if len(words) < nameAndRef || len(words) > nameRefAndTheirs ||
-		len(words) == nameRefAndTheirs && words[third] != "theirs" {
+	if len(words) == nameRefAndTheirs && words[third] != "theirs" {
 		return at.errorf("stack wants \"stack NAME REF\", or " +
 			"\"stack NAME REF theirs\" for someone else's code")
 	}
@@ -819,12 +837,9 @@ func setStack(cfg *Config, at line, _, val string) error {
 	return nil
 }
 
-// a stack line's words, as the line is defined: the name and the ref,
-// and theirs when the member is someone else's.
-const (
-	nameAndRef       = 2 // defined by the line: NAME REF
-	nameRefAndTheirs = 3 // defined by the line: NAME REF theirs
-)
+// nameRefAndTheirs is the words of a stack line that marks its member
+// someone else's, as the line is defined: NAME REF theirs.
+const nameRefAndTheirs = 3
 
 // IsTheirs is whether the stack member of that name is someone else's
 // code, marked theirs.
@@ -904,14 +919,7 @@ func setNeeds(cfg *Config, at line, _, val string) error {
 		)
 	}
 	name, why, _ := strings.Cut(val, " ")
-	if strings.TrimSpace(why) == "" {
-		return at.errorf(
-			"needs wants \"needs " +
-				"NAME why it is needed\"",
-		)
-	}
-	cfg.needs = append(cfg.needs,
-		Need{name: name, why: strings.TrimSpace(why)})
+	cfg.needs = append(cfg.needs, Need{name: name, why: why})
 	return nil
 }
 
@@ -926,22 +934,19 @@ func setValue(cfg *Config, at line, _, val string) error {
 		)
 	}
 	name, value, _ := strings.Cut(val, " ")
-	if strings.TrimSpace(value) == "" {
-		return at.errorf("set wants \"set NAME value\"")
-	}
 	if at.open != "" {
 		held := cfg.projects[at.open]
 		if held.set == nil {
 			held.set = map[string]string{}
 		}
-		held.set[name] = strings.TrimSpace(value)
+		held.set[name] = value
 		cfg.projects[at.open] = held
 		return nil
 	}
 	if cfg.set == nil {
 		cfg.set = map[string]string{}
 	}
-	cfg.set[name] = strings.TrimSpace(value)
+	cfg.set[name] = value
 	return nil
 }
 
@@ -949,20 +954,10 @@ func setValue(cfg *Config, at line, _, val string) error {
 // and, after the double colon, the command. steps of one name gather in
 // order.
 func setTarget(cfg *Config, at line, key, val string) error {
-	// with no space there is no rest, and with no :: there is no
-	// command, so an empty command is every way this line falls short
-	name, rest, _ := strings.Cut(val, " ")
-	dir, cmd, _ := strings.Cut(strings.TrimSpace(rest), "::")
-	if strings.TrimSpace(cmd) == "" {
-		return at.errorf(
-			"%s wants \"%s NAME "+
-				"DIR :: COMMAND ...\"",
-			key,
-			key,
-		)
-	}
-	dir = expand(strings.TrimSpace(dir), at.home)
-	step := strings.Fields(strings.TrimSpace(cmd))
+	// pzm has seen the name, the directory and the command's tail
+	name, dir, _ := strings.Cut(val, " ")
+	dir = expand(dir, at.home)
+	step := strings.Fields(at.tail)
 	for i := range step {
 		step[i] = expand(step[i], at.home)
 	}
@@ -990,7 +985,7 @@ func setTarget(cfg *Config, at line, key, val string) error {
 // meant to carry.
 func setSweep(cfg *Config, at line, _, val string) error {
 	words := strings.Fields(val)
-	if len(words) < allowWords || words[first] != "allow" {
+	if words[first] != "allow" {
 		return at.errorf(
 			"sweep wants "+
 				"allow FILE KIND...; the "+
@@ -1028,11 +1023,11 @@ func setLint(cfg *Config, at line, _, val string) error {
 	}
 	name, args := words[first], words[second:]
 	if name == "allow" {
-		rule, err := allowance(at.path, at.at, words)
+		rule, err := allowance(at, words)
 		if err != nil {
 			return err
 		}
-		cfg.lint = append(cfg.lint, rule)
+		cfg.lint = append(cfg.lint, *rule)
 		return nil
 	}
 	if !slices.Contains(rules, name) {
@@ -1050,9 +1045,8 @@ func setLint(cfg *Config, at line, _, val string) error {
 // setRapid is "rapid checks N", how many checks a property test runs.
 func setRapid(cfg *Config, at line, _, val string) error {
 	key, said, _ := strings.Cut(val, " ")
-	said = strings.TrimSpace(said)
 	var checks int
-	if key == "checks" && !strings.ContainsAny(said, " \t") {
+	if key == "checks" {
 		checks, _ = strconv.Atoi(said)
 	}
 	if !count.Positive(checks) {
@@ -1064,24 +1058,6 @@ func setRapid(cfg *Config, at line, _, val string) error {
 	}
 	cfg.rapidChecks = checks
 	return nil
-}
-
-// split splits "key value" or "key = value". the key is lowercased and the
-// value is unquoted. a line with no value is an error.
-func split(line string) (string, string, error) {
-	key, val, _ := strings.Cut(line, "=")
-	for _, space := range []string{" ", "\t"} {
-		word, rest, cut := strings.Cut(line, space)
-		if cut && len(word) < len(key) {
-			key, val = word, rest
-		}
-	}
-	val = strings.TrimSpace(strings.TrimLeft(val, " \t="))
-	key = strings.ToLower(strings.TrimSpace(key))
-	if key == "" || val == "" {
-		return "", "", fmt.Errorf("want \"key value\", got %q", line)
-	}
-	return key, unquoted(val), nil
 }
 
 // unquoted is a value with the one pair of quotes around it taken off,

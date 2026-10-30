@@ -9,6 +9,7 @@ import (
 	"testing/fstest"
 
 	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/release"
 	"github.com/janearc/game/internal/repo"
 	"github.com/janearc/game/internal/sweep"
 )
@@ -18,7 +19,7 @@ import (
 func TestTellDiffSaysEachPart(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	tellDiff(&out, "x v1", &differing{same: true})
+	tellDiff(&out, "x v1", release.NewDifference("", "", "", "", true, nil))
 	if want := "release diff x v1: dist already has this tree, so a " +
 		"release would change nothing\n"; out.String() != want {
 		t.Errorf("the same: %q", out.String())
@@ -30,9 +31,9 @@ func TestTellDiffSaysEachPart(t *testing.T) {
 		parent: repo.Short(parent),
 	} {
 		out.Reset()
-		tellDiff(&out, "x", &differing{tree: tree, parent: from,
-			stat: "a | 1 +", patch: "the patch\n",
-			hits: []sweep.Hit{sweep.Found("a never-word", "a")}})
+		tellDiff(&out, "x", release.NewDifference(tree, from, "a | 1 +",
+			"the patch\n", false,
+			[]sweep.Hit{sweep.Found("a never-word", "a")}))
 		said := "release diff x: " + want + " -> " + repo.Short(tree) + "\n\n" +
 			" a | 1 +\nwould be refused: a never-word in a\n\nthe patch\n"
 		if out.String() != said {
@@ -58,7 +59,7 @@ func TestReleaseDiffSaysWhatWouldGo(t *testing.T) {
 			"without never-words"},
 	} {
 		var out bytes.Buffer
-		if err := releaseDiffTo(one, cfg, each.tag, each.never,
+		if err := releaseDiff(one, cfg, each.tag, each.never,
 			&out); err != nil {
 			t.Fatal(err)
 		}
@@ -66,12 +67,12 @@ func TestReleaseDiffSaysWhatWouldGo(t *testing.T) {
 			t.Errorf("%q: said %q", each.tag, out.String())
 		}
 	}
-	if err := releaseDiffTo(one, cfgFor(t, "ada", road, ""), "", words(t),
+	if err := releaseDiff(one, cfgFor(t, "ada", road, ""), "", words(t),
 		&bytes.Buffer{}); err == nil ||
 		!strings.Contains(err.Error(), "nothing to diff against") {
 		t.Errorf("a diff with no dist: %v", err)
 	}
-	if err := releaseDiffTo(cleaned(t, "x", nil), cfg, "", words(t),
+	if err := releaseDiff(cleaned(t, "x", nil), cfg, "", words(t),
 		&bytes.Buffer{}); err == nil {
 		t.Error("a diff of a tree with no commit was made")
 	}
@@ -148,7 +149,7 @@ func TestTreesSaysTheBlock(t *testing.T) {
 	work := freshTree(t, "x", map[string]string{"a": "a\n"})
 	var out bytes.Buffer
 	cfg := loadedAs(t, "", nil, nil)
-	if err := treesTo(work, cfg, &out); err != nil {
+	if err := trees(work, cfg, &out); err != nil {
 		t.Fatal(err)
 	}
 	want := "a local build: " + cfg.NoBlock().Error() + "\nroad: (none; " +
@@ -158,7 +159,7 @@ func TestTreesSaysTheBlock(t *testing.T) {
 		t.Errorf("no block: said %q, want %q", out.String(), want)
 	}
 	out.Reset()
-	if err := treesTo(work, cfgFor(t, "ada", "road.git", "dist.git"),
+	if err := trees(work, cfgFor(t, "ada", "road.git", "dist.git"),
 		&out); err != nil {
 		t.Fatal(err)
 	}
@@ -166,23 +167,8 @@ func TestTreesSaysTheBlock(t *testing.T) {
 		t.Errorf("a block: said %q", out.String())
 	}
 	gitAt(t, work.Dir(), "config", "core.hooksPath", "a/hooks")
-	if err := treesTo(work, cfgFor(t, "ada", "road.git", "dist.git"),
+	if err := trees(work, cfgFor(t, "ada", "road.git", "dist.git"),
 		&bytes.Buffer{}); err == nil {
 		t.Error("a dist that could not be guarded was not an error")
 	}
 }
-
-// differing is a stand-in difference for tellDiff: what a release would
-// change, as a test says it.
-type differing struct {
-	same                      bool
-	tree, parent, stat, patch string
-	hits                      []sweep.Hit
-}
-
-func (diff *differing) Same() bool        { return diff.same }
-func (diff *differing) Parent() string    { return diff.parent }
-func (diff *differing) Tree() string      { return diff.tree }
-func (diff *differing) Stat() string      { return diff.stat }
-func (diff *differing) Hits() []sweep.Hit { return diff.hits }
-func (diff *differing) Patch() string     { return diff.patch }

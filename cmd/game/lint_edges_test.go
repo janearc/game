@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,9 +34,9 @@ func TestLintListsTalliesAndJudges(t *testing.T) {
 		args   []string
 		listed bool
 	}{{nil, true}, {[]string{"--count"}, false}} {
-		var out, errs bytes.Buffer
-		err := lintTo(repoAt(dir), cfg,
-			each.args, &out, &errs)
+		var out bytes.Buffer
+		err := verbTo(t, "lint", lintVerb, repoAt(dir), cfg,
+			each.args, &out)
 		if err == nil || err.Error() != "lint: 1 to fix, 2 to look at" {
 			t.Errorf("%v: %v", each.args, err)
 		}
@@ -57,33 +59,49 @@ func TestLintSaysClean(t *testing.T) {
 	work := gitTree(t, dir, map[string]string{"a.go": "package a\n"})
 	cfg := gamed(t, "lint width 30")
 	var out bytes.Buffer
-	if err := lintTo(work, cfg, nil, &out, &bytes.Buffer{}); err != nil ||
+	if err := verbTo(t, "lint", lintVerb, work, cfg, nil, &out); err != nil ||
 		out.String() != "lint: clean\n" {
 		t.Errorf("%v, said %q", err, out.String())
 	}
 }
 
-// with no rules lint asks for them and passes; rules it cannot read and
-// a tree it cannot walk are the error.
-func TestLintSaysWhatItCannotDo(t *testing.T) {
+// with no rules lint asks for them, on standard error, and passes. the
+// verb writes that notice to the process's own standard error, so this
+// test runs this binary as game, as TestMainRunsTheWordsAfterItsName does.
+func TestLintAsksForRulesOnStandardError(t *testing.T) {
 	t.Parallel()
+	home := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(self, "lint")
+	child.Dir = t.TempDir()
+	child.Env = append(os.Environ(), asMain+"=1", "GAME_HOME="+home,
+		"HOME="+home)
 	var out, errs bytes.Buffer
-	if err := lintTo(cleaned(t, "x", nil), blankConfig(), nil, &out,
-		&errs); err != nil || count.Positive(out.Len()) ||
+	child.Stdout, child.Stderr = &out, &errs
+	if err := child.Run(); err != nil || count.Positive(out.Len()) ||
 		!strings.HasPrefix(errs.String(), "lint: hey buddy") {
 		t.Errorf("no rules: %v, said %q, %q", err, out.String(),
 			errs.String())
 	}
+}
+
+// rules it cannot read and a tree it cannot walk are the error.
+func TestLintSaysWhatItCannotDo(t *testing.T) {
+	t.Parallel()
+	if err := verbTo(t, "lint", lintVerb, cleaned(t, "x", nil), blankConfig(), nil, quiet); err != nil {
+		t.Errorf("no rules: %v", err)
+	}
 	bad := gamed(t, "lint width wide")
-	if err := lintTo(cleaned(t, "x", nil), bad, nil, &bytes.Buffer{},
-		&bytes.Buffer{}); err == nil {
+	if err := verbTo(t, "lint", lintVerb, cleaned(t, "x", nil), bad, nil, &bytes.Buffer{}); err == nil {
 		t.Error("a width that is no number was taken")
 	}
 	_, cfg := linted(t)
 	missing := filepath.Join(cleaned(t, "x", nil).Dir(), "nowhere")
 	gone := repoAt(missing)
-	if err := lintTo(gone, cfg, nil, &bytes.Buffer{},
-		&bytes.Buffer{}); err == nil {
+	if err := verbTo(t, "lint", lintVerb, gone, cfg, nil, &bytes.Buffer{}); err == nil {
 		t.Error("a tree that is not there was linted")
 	}
 }

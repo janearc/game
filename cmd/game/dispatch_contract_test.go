@@ -16,7 +16,7 @@ type dispatched struct {
 	err   error
 }
 
-func (seen *dispatched) run(repo.Repo, config.Config) error {
+func (seen *dispatched) run(repo.Repo, config.Config, io.Writer) error {
 	seen.calls++
 	return seen.err
 }
@@ -26,11 +26,11 @@ func TestWordlessDispatchRunsItsHandler(t *testing.T) {
 	work := repoAt(t.TempDir())
 	seen := &dispatched{err: errors.New("handler refused")}
 	ignore := withoutWords(seen.run)
-	if err := ignore(work, blankConfig(), []string{"ignored"}); !errors.Is(err, seen.err) {
+	if err := viaPzm(t, "trees", ignore, work, blankConfig(), []string{"ignored"}); !errors.Is(err, seen.err) {
 		t.Fatalf("handler error lost: %v", err)
 	}
 	bare := bareVerb("sample", "sample handler", seen.run)
-	if err := bare(work, blankConfig(), nil); !errors.Is(err, seen.err) {
+	if err := viaPzm(t, "trees", bare, work, blankConfig(), nil); !errors.Is(err, seen.err) {
 		t.Fatalf("bare handler error lost: %v", err)
 	}
 	if seen.calls != count.Next(count.One) {
@@ -56,19 +56,22 @@ func TestSettleExportsOnlyDeclaredValues(t *testing.T) {
 func TestReadOnlyDispatchHandlersAreWired(t *testing.T) {
 	work := freshTree(t, "sample", map[string]string{"notes": "plain\n"})
 	cfg := blankConfig()
-	if err := helpVerb(work, cfg, nil); err != nil {
+	if err := viaPzm(t, "trees", withoutWords(trees), work, cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := treesVerb(work, cfg, nil); err != nil {
+	// a tree with no go.mod has nothing for check to run, so the real
+	// runner it is given is never started.
+	if err := viaPzm(t, "check", withoutWords(running(check)), work, cfg,
+		nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := whoVerb(work, cfg, nil); err != nil {
+	if err := viaPzm(t, "history", whoVerb, work, cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := patchVerb(work, cfg, nil); err == nil {
+	if err := viaPzm(t, "patch", patchVerb, work, cfg, nil); err == nil {
 		t.Fatal("patch accepted an unspecified member")
 	}
-	if err := releaseVerb(work, cfg, []string{"diff", "v1"}); err == nil {
+	if err := viaPzm(t, "release", releaseVerb, work, cfg, []string{"diff", "v1"}); err == nil {
 		t.Fatal("release diff accepted missing project remotes")
 	}
 }
@@ -76,7 +79,7 @@ func TestReadOnlyDispatchHandlersAreWired(t *testing.T) {
 func TestBuildDispatchRejectsUnknownTarget(t *testing.T) {
 	t.Parallel()
 	work := repoAt(t.TempDir())
-	if err := buildVerb(work, blankConfig(), []string{"missing"}); err == nil {
+	if err := viaPzm(t, "build", buildVerb, work, blankConfig(), []string{"missing"}); err == nil {
 		t.Fatal("unknown build target accepted")
 	}
 }
@@ -85,7 +88,7 @@ func TestCleanDispatchRemovesOnlyBuildProducts(t *testing.T) {
 	t.Parallel()
 	work := freshTree(t, "sample", map[string]string{"notes": "source\n"})
 	write(t, work.Path("bin", "built"), "product")
-	if err := cleanVerb(work, blankConfig(), nil); err != nil {
+	if err := viaPzm(t, "clean", cleanVerb, work, blankConfig(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(work.Path("bin", "built")); !os.IsNotExist(err) {
@@ -101,10 +104,10 @@ func TestLintAndVerifyDispatchRejectMalformedSource(t *testing.T) {
 	work := repoAt(t.TempDir())
 	write(t, work.Path("broken.go"), "package {\n")
 	cfg := gamed(t, "lint comments")
-	if err := lintVerb(work, cfg, nil); err == nil {
+	if err := viaPzm(t, "lint", lintVerb, work, cfg, nil); err == nil {
 		t.Fatal("lint dispatch accepted malformed source")
 	}
-	if err := verifyVerb(work, cfg, nil); err == nil {
+	if err := viaPzm(t, "verify", verifyVerb, work, cfg, nil); err == nil {
 		t.Fatal("verify dispatch accepted malformed source")
 	}
 }
@@ -112,7 +115,7 @@ func TestLintAndVerifyDispatchRejectMalformedSource(t *testing.T) {
 func TestSweepDispatchRejectsMissingRevision(t *testing.T) {
 	t.Parallel()
 	work := freshTree(t, "sample", map[string]string{"notes": "source\n"})
-	if err := sweepVerb(work, blankConfig(), []string{"missing-ref"}); err == nil {
+	if err := viaPzm(t, "sweep", sweepVerb, work, blankConfig(), []string{"missing-ref"}); err == nil {
 		t.Fatal("sweep dispatch accepted an absent revision")
 	}
 }

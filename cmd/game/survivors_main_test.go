@@ -60,7 +60,7 @@ func TestExportGivesThePipeError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	here := repoAt(dir)
-	err := exportUsing(here, "HEAD", dir, occupiedCommand{}.command)
+	err := export(here, "HEAD", dir, occupiedCommand{}.command)
 	if err == nil || !strings.Contains(err.Error(), "Stdout already set") ||
 		strings.HasPrefix(err.Error(), "tar:") {
 		t.Errorf("an archive with its stdout taken: %v", err)
@@ -73,7 +73,7 @@ func TestExportGivesTheErrorOfStartingTar(t *testing.T) {
 	t.Parallel()
 	here := repoAt(t.TempDir())
 	missing := filepath.Join(t.TempDir(), "no-tar")
-	err := exportUsing(here, "HEAD", t.TempDir(), noTar{missing}.command)
+	err := export(here, "HEAD", t.TempDir(), noTar{missing}.command)
 	if !errors.Is(err, fs.ErrNotExist) || strings.HasPrefix(err.Error(), "tar:") {
 		t.Errorf("tar that is not there: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestExportGivesTheArchiveItsRefusalBeforeTars(t *testing.T) {
 	t.Parallel()
 	here := repoAt(t.TempDir())
 	scripts := shelled{"exit 3", failingTar}
-	err := exportUsing(here, "HEAD", t.TempDir(), scripts.command)
+	err := export(here, "HEAD", t.TempDir(), scripts.command)
 	var refused *exec.ExitError
 	if !errors.As(err, &refused) || refused.ExitCode() != exitedThree {
 		t.Errorf("an archive that exits 3: %v", err)
@@ -99,7 +99,7 @@ func TestExportGivesTarsErrorWhenTheArchiveIsWhole(t *testing.T) {
 	t.Parallel()
 	here := repoAt(t.TempDir())
 	scripts := shelled{"true", failingTar}
-	err := exportUsing(here, "HEAD", t.TempDir(), scripts.command)
+	err := export(here, "HEAD", t.TempDir(), scripts.command)
 	var refused *exec.ExitError
 	if !errors.As(err, &refused) || refused.ExitCode() != exitedFive ||
 		!strings.HasPrefix(err.Error(), "tar: broken: ") {
@@ -130,53 +130,20 @@ func TestPlayGivesTheNumbersTheShellSees(t *testing.T) {
 	}
 }
 
-// heldStderr is os.Stderr held in a pipe until it is released. while it
-// is held a test does not run beside others.
-type heldStderr struct {
-	t           *testing.T
-	was         *os.File
-	read, write *os.File
-}
-
-// holdStderr takes os.Stderr into a pipe.
-func holdStderr(t *testing.T) *heldStderr {
-	t.Helper()
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	held := &heldStderr{t: t, was: os.Stderr, read: read, write: write}
-	os.Stderr = write
-	return held
-}
-
-// release puts os.Stderr back and gives what was written to it.
-func (held *heldStderr) release() string {
-	held.t.Helper()
-	os.Stderr = held.was
-	held.write.Close()
-	body, err := io.ReadAll(held.read)
-	held.read.Close()
-	if err != nil {
-		held.t.Fatal(err)
-	}
-	return string(body)
-}
-
-// TestPlayWithNoWordSaysUsageAndNothingOfTheConfig: no word stops at
-// the usage, before any config is read.
-func TestPlayWithNoWordSaysUsageAndNothingOfTheConfig(t *testing.T) {
+// TestNoWordSaysPzmsHelpAndNothingOfTheConfig: no word is pzm's help and
+// exit 0, before any config of the repository is read.
+func TestNoWordSaysPzmsHelpAndNothingOfTheConfig(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, ".game"), "a line that is no directive\n")
 	if _, err := config.Load(t.TempDir(), t.TempDir(), dir); err == nil {
 		t.Fatal("the fixture's .game reads; it should not")
 	}
-	held := holdStderr(t)
-	code := play(nil, dir, t.TempDir(), t.TempDir())
-	said := held.release()
-	if code != shellUsage || !strings.HasPrefix(said, "game check") ||
-		strings.Contains(said, "game:") {
-		t.Errorf("no word: %d, %q", code, said)
+	var out, errs strings.Builder
+	code := runPzm(nil, dir, t.TempDir(), t.TempDir(),
+		strings.NewReader(""), &out, &errs)
+	if code != shellOK || !strings.HasPrefix(out.String(), "game:") ||
+		errs.Len() != count.Nothing {
+		t.Errorf("no word: %d, %q, %q", code, out.String(), errs.String())
 	}
 }
 
@@ -206,7 +173,7 @@ func TestResolvedJoinsAProgramWithASlashToItsDirectory(t *testing.T) {
 type paintRecord struct{ shown []string }
 
 // paint notes the directory and name it was asked for.
-func (record *paintRecord) paint(dir, name string) bool {
+func (record *paintRecord) paint(_ io.Writer, dir, name string) bool {
 	record.shown = append(record.shown, dir+" "+name)
 	return true
 }
@@ -217,7 +184,7 @@ func TestPaintOkShowsOnlyAMemberThatBuilt(t *testing.T) {
 	t.Parallel()
 	for result, shown := range map[string]bool{"ok": true, "failed": false, "flaky": false} {
 		var record paintRecord
-		paintOk("/work", "m", result, record.paint)
+		paintOk(quiet, "/work", "m", result, record.paint)
 		if shown != (len(record.shown) == count.One) ||
 			shown && record.shown[count.First] != "/work/m m" {
 			t.Errorf("%s painted %q", result, record.shown)
@@ -249,7 +216,7 @@ func TestBuildStackTriesAFailureOnTheNetworkThreeTimes(t *testing.T) {
 	dir, tries := t.TempDir(), filepath.Join(t.TempDir(), "tries")
 	write(t, filepath.Join(dir, "a", ".game"), "name a\n")
 	noisy := noisyChild{tries, `{"step":"check","state":"fail","kind":"transient"}`}
-	err := buildStack(repoAt(dir), gamed(t, "stack a main"),
+	err := argsBuildStack(t, repoAt(dir), gamed(t, "stack a main"),
 		[]string{"--here"}, io.Discard, noisy.child)
 	if err == nil {
 		t.Fatal("a member that always fails built clean")
@@ -266,7 +233,7 @@ func TestBuildStackDoesNotRetryAFailureThatIsNotTheNetworks(t *testing.T) {
 	dir, tries := t.TempDir(), filepath.Join(t.TempDir(), "tries")
 	write(t, filepath.Join(dir, "a", ".game"), "name a\n")
 	noisy := noisyChild{tries, `{"step":"check","state":"fail"}`}
-	_ = buildStack(repoAt(dir), gamed(t, "stack a main"),
+	_ = argsBuildStack(t, repoAt(dir), gamed(t, "stack a main"),
 		[]string{"--here"}, io.Discard, noisy.child)
 	if got := triesOf(tries); got != count.One {
 		t.Errorf("tries %d; want %d", got, count.One)

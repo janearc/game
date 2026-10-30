@@ -42,12 +42,15 @@ func drawProjects(
 	keys := rapid.SliceOfNDistinct(plainWord, count.Nothing, mostSets, same)
 	for _, name := range names.Draw(t, "projects") {
 		*lines = append(*lines, "", "# "+name, "project "+name)
+		// a block is indented one way throughout: pzm refuses a block
+		// that changes between tabs and spaces
+		indent := rapid.SampledFrom([]string{"\t", "    "}).Draw(t, "indent")
 		road := plainWord.Draw(t, "road")
-		*lines = append(*lines, "\troad "+road)
+		*lines = append(*lines, indent+"road "+road)
 		dist := ""
 		if rapid.Bool().Draw(t, "has dist") {
 			dist = plainWord.Draw(t, "dist")
-			*lines = append(*lines, "    dist "+dist)
+			*lines = append(*lines, indent+"dist "+dist)
 		}
 		var set map[string]string
 		for _, key := range keys.Draw(t, "project set names") {
@@ -56,7 +59,7 @@ func drawProjects(
 			}
 			value := plainWord.Draw(t, "project set value")
 			set[key] = value
-			*lines = append(*lines, "\tset "+key+" "+value)
+			*lines = append(*lines, indent+"set "+key+" "+value)
 		}
 		want = append(want, drawnProject{name, road, dist, set})
 	}
@@ -149,7 +152,7 @@ func (prop unknownKeyProperty) check(t *rapid.T) {
 	}
 	lines = append(lines, key+" "+plainWord.Draw(t, "value"))
 	text := strings.Join(lines, "\n") + "\n"
-	want := fmt.Sprintf("f:%d: unknown key %q", len(lines), key)
+	want := fmt.Sprintf("f:%d: %s: this is not a key", len(lines), key)
 	for _, dotfile := range []bool{true, false} {
 		var cfg config.Config
 		err := cfg.Parse(strings.NewReader(text), "f", "/srv/ada",

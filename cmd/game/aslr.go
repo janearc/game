@@ -10,7 +10,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -21,13 +20,18 @@ import (
 	"github.com/janearc/game/internal/config"
 	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/repo"
+	"github.com/janearc/puzzlemouth/pzm"
 )
+
+// folderMode is the mode bin/ is made with: the owner writes, everyone
+// reads and enters.
+const folderMode = 0o755 // rwxr-xr-x, defined by sys/stat.h's bits
 
 // otool is the program game reads a Mach-O header from.
 const otool = "otool"
 
-// errASLRLanguage is aslr with a word that is not c, xcode or go.
-var errASLRLanguage = errors.New("aslr: name c, xcode or go")
+// errASLRLanguage is aslr with no word, or a word that is not go.
+var errASLRLanguage = errors.New("aslr: name go")
 
 // errNoBinaries is aslr with no Mach-O binary to check.
 var errNoBinaries = errors.New(
@@ -53,64 +57,25 @@ var machoMagics = [][]byte{
 // magicBytes is how many bytes a Mach-O magic is, defined as four.
 const magicBytes = 4
 
-// aslrVerb is game aslr: c, xcode or go builds and checks its binaries,
-// and nothing checks every Mach-O already in bin/.
-func aslrVerb(here repo.Repo, _ config.Config, args []string) error {
-	return aslrBy(here.Dir(), args, run, httpFetch, os.Stdout, os.Stderr)
+// aslrVerb is game aslr go: every cmd/* built and its binaries checked.
+func aslrVerb(here repo.Repo, _ config.Config, call pzm.Call) error {
+	return aslr(here.Dir(), call.Args(), run, call.Out())
 }
 
-// aslrBy is aslrVerb in dir, building with by and fetching with get.
-func aslrBy(dir string, args []string, by runner, get fetcher,
-	out, errs io.Writer) error {
-	word, rest, said := verbWord(args)
-	switch {
-	case !said:
-		return aslrBinBy(dir, by, out)
-	case word == "c":
-		return aslrCBy(dir, rest, by, get, out, errs)
-	case word == "xcode":
-		return aslrXcodeBy(dir, rest, by, get, out, errs)
-	case word == "go":
-		return aslrGoBy(dir, rest, by, out)
+// aslr is aslrVerb in dir, building with by.
+func aslr(dir string, args []string, by runner, out io.Writer) error {
+	word, rest, _ := verbWord(args)
+	if word == "go" {
+		return aslrGo(dir, rest, by, out)
+	}
+	if word == "" {
+		return errASLRLanguage
 	}
 	return fmt.Errorf("%w, not %q", errASLRLanguage, word)
 }
 
-// aslrCBy is game aslr c, as
-//
-//	game aslr c [-o NAME] [-with LIB] SOURCE...
-//
-// the sources built as build-c builds them, then their binary checked
-// for PIE.
-func aslrCBy(dir string, args []string, by runner, get fetcher,
-	out, errs io.Writer) error {
-	fs := flag.NewFlagSet("aslr c", flag.ContinueOnError)
-	fs.SetOutput(errs)
-	name := fs.String("o", "",
-		"the program's name; the first source's, by default")
-	with := libFlag(fs)
-	if err := parsedForeign(fs, args); err != nil {
-		return err
-	}
-	program, err := buildCProgram(dir, *name, fs.Args(), *with, by, get)
-	if err != nil {
-		return err
-	}
-	return checkPIE(by, dir, program, out)
-}
-
-// aslrXcodeBy is game aslr xcode -scheme S [-with LIB]: the scheme built
-// as build-xcode builds it, then each Mach-O it left in bin/ checked.
-func aslrXcodeBy(dir string, args []string, by runner, get fetcher,
-	out, errs io.Writer) error {
-	if err := buildXcodeBy(dir, args, by, get, out, errs); err != nil {
-		return err
-	}
-	return aslrBinBy(dir, by, out)
-}
-
-// aslrGoBy is game aslr go: every cmd/* built into bin/, then checked.
-func aslrGoBy(dir string, args []string, by runner, out io.Writer) error {
+// aslrGo is game aslr go: every cmd/* built into bin/, then checked.
+func aslrGo(dir string, args []string, by runner, out io.Writer) error {
 	if word, _, said := verbWord(args); said {
 		return fmt.Errorf("aslr go: %q is a word", word)
 	}
@@ -134,19 +99,15 @@ func aslrGoBy(dir string, args []string, by runner, out io.Writer) error {
 			return err
 		}
 	}
-	return aslrBinBy(dir, by, out)
+	return aslrBin(dir, by, out, filepath.Rel)
 }
 
 type relativePath func(string, string) (string, error)
 
-// aslrBinBy is aslr over every Mach-O already in bin/: each executable
-// must be PIE. Nothing in bin/ or no Mach-O in it stops it.
-func aslrBinBy(dir string, by runner, out io.Writer) error {
-	return aslrBinUsing(dir, by, out, filepath.Rel)
-}
-
-// aslrBinUsing is aslrBinBy with the path arithmetic given.
-func aslrBinUsing(
+// aslrBin is aslr over every Mach-O already in bin/: each executable
+// must be PIE. Nothing in bin/ or no Mach-O in it stops it. relative
+// finds each one's path under dir.
+func aslrBin(
 	dir string, by runner, out io.Writer, relative relativePath,
 ) error {
 	bins, err := machOBinaries(dir)
@@ -184,23 +145,8 @@ func checkPIE(by runner, dir, program string, out io.Writer) error {
 	return nil
 }
 
-// buildCProgram builds the C sources into bin/ as build-c would, and
-// gives that binary's path. Sources are checked before anything runs.
-func buildCProgram(dir, name string, sources, with []string, by runner,
-	get fetcher) (string, error) {
-	argv, program, err := cArgv(name, sources)
-	if err != nil {
-		return "", err
-	}
-	_, err = linkHardened(dir, argv, program, with, by, get)
-	if err != nil {
-		return "", err
-	}
-	return program, nil
-}
-
 // machOBinaries is every regular Mach-O under bin/, with any hidden
-// folder such as bin/.deps and bin/.xcode left out.
+// folder such as bin/.cover left out.
 func machOBinaries(dir string) ([]string, error) {
 	finding := &findingMachO{bin: filepath.Join(dir, "bin"),
 		relative: filepath.Rel}

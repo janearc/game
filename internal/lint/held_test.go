@@ -35,5 +35,5 @@ func held(test *testing.T, name string) float64 {
 	if err != nil {
 		test.Fatal(err)
 	}
-	return number.Value()
+	return number.Value
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,16 +18,16 @@ type roadVerb struct {
 }
 
 // push is game push.
-func (verb roadVerb) push() error { return pushRoad(verb.one, verb.cfg) }
+func (verb roadVerb) push() error { return pushRoad(verb.one, verb.cfg, quiet) }
 
 // stick is game stick.
-func (verb roadVerb) stick() error { return doStick(verb.one, verb.cfg) }
+func (verb roadVerb) stick() error { return stick(verb.one, verb.cfg, quiet) }
 
 // sticky is game sticky.
-func (verb roadVerb) sticky() error { return doSticky(verb.one, verb.cfg) }
+func (verb roadVerb) sticky() error { return follow(verb.one, verb.cfg, quiet) }
 
 // unstick is game unstick.
-func (verb roadVerb) unstick() error { return doUnstick(verb.one, verb.cfg) }
+func (verb roadVerb) unstick() error { return unstick(verb.one, verb.cfg, quiet) }
 
 // TestAMissingRoadIsSaidPlainly: a project block can name a road that
 // is not there, a path typed wrong or a repository never made, and
@@ -39,7 +40,7 @@ func TestAMissingRoadIsSaidPlainly(t *testing.T) {
 	// stuck first, on the real road, so that unstick has a claim to let
 	// go of and is refused for the road rather than for having nothing
 	// to do. each verb must refuse before it commits anything.
-	if err := doStick(one, cfgFor(t, "ada", road, "")); err != nil {
+	if err := stick(one, cfgFor(t, "ada", road, ""), quiet); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
 	before, _ := one.Git("rev-parse", "HEAD")
@@ -85,7 +86,7 @@ func TestAMissingRoadSaysWhereItLooked(t *testing.T) {
 	one, _, _, _ := stickyFixture(t)
 	gone := filepath.Join(t.TempDir(), "typed-wrong-road.git")
 	cfg := cfgFor(t, "ada", "../typed-wrong-road.git", "")
-	err := pushRoad(one, cfg)
+	err := pushRoad(one, cfg, quiet)
 	if err == nil || !strings.Contains(err.Error(),
 		one.Path("..", "typed-wrong-road.git")) {
 		t.Errorf("a relative road's refusal does not say where it "+
@@ -104,12 +105,12 @@ func TestAMissingRoadSaysWhereItLooked(t *testing.T) {
 func TestABuildWhileStuckNeedsItsRoad(t *testing.T) {
 	t.Parallel()
 	one, _, road, _ := stickyFixture(t)
-	if err := doStick(one, cfgFor(t, "ada", road, "")); err != nil {
+	if err := stick(one, cfgFor(t, "ada", road, ""), quiet); err != nil {
 		t.Fatalf("stick: %v", err)
 	}
 	gone := filepath.Join(t.TempDir(), "moved-away.git")
 	cfg := cfgFor(t, "ada", gone, "")
-	err := syncBuild(one, cfg)
+	err := syncBuild(one, cfg, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), gone) {
 		t.Fatalf("a stuck build with a missing road: %v", err)
 	}

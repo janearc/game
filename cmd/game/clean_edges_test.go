@@ -89,7 +89,7 @@ func TestCleanAsksGoForWhatItWasAskedAndCountsTheRest(t *testing.T) {
 		stand := &asked{}
 		var out bytes.Buffer
 		cfg := gamed(t, "stack member v1", "stack other v1", "stack gone v1")
-		if err := cleanBy(work, cfg, cache, stand.run, &out); err != nil {
+		if err := clean(work, cfg, cache, stand.run, &out); err != nil {
 			t.Fatal(err)
 		}
 		want := []string{"root: go clean ./..."}
@@ -124,7 +124,7 @@ func TestCleanStopsWhereGoRefuses(t *testing.T) {
 		work := cleaned(t, "root", map[string]string{
 			"go.mod": "module x\n", "bin/a": "built"})
 		stand := &asked{fail: fail}
-		err := cleanBy(work, blankConfig(), true, stand.run, &bytes.Buffer{})
+		err := clean(work, blankConfig(), true, stand.run, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), fail) {
 			t.Errorf("%s: %v", fail, err)
 		}
@@ -138,7 +138,7 @@ func TestCleanStopsWhereGoRefuses(t *testing.T) {
 func TestCleanRefusesABinItCannotRead(t *testing.T) {
 	t.Parallel()
 	work := cleaned(t, "root", map[string]string{"bin": "a file, not a dir"})
-	err := cleanBy(work, blankConfig(), false, (&asked{}).run,
+	err := clean(work, blankConfig(), false, (&asked{}).run,
 		&bytes.Buffer{})
 	if err == nil {
 		t.Error("a bin that is a file was swept")
@@ -150,7 +150,7 @@ func TestCleanTakesGoWorkSum(t *testing.T) {
 	t.Parallel()
 	work := cleaned(t, "root", map[string]string{"go.work.sum": "h1:x\n"})
 	var out bytes.Buffer
-	if err := cleanBy(work, blankConfig(), false, (&asked{}).run,
+	if err := clean(work, blankConfig(), false, (&asked{}).run,
 		&out); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestCleanTakesGoWorkSum(t *testing.T) {
 		t.Errorf("said %q", out.String())
 	}
 	stuck := cleaned(t, "stuck", map[string]string{"go.work.sum/x": "x"})
-	if err := cleanBy(stuck, blankConfig(), false, (&asked{}).run,
+	if err := clean(stuck, blankConfig(), false, (&asked{}).run,
 		&bytes.Buffer{}); err == nil {
 		t.Error("a go.work.sum that would not go was not an error")
 	}
@@ -199,7 +199,7 @@ func TestCleanLeavesABinGitCannotSpeakFor(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "bin", "a"), "maybe source")
-	err := cleanBy(repoAt(dir), blankConfig(), false,
+	err := clean(repoAt(dir), blankConfig(), false,
 		(&asked{}).run, &bytes.Buffer{})
 	if err == nil {
 		t.Error("a bin outside git was swept without an error")
@@ -238,7 +238,7 @@ func TestCleanSaysWhatWouldNotGo(t *testing.T) {
 		open := os.FileMode(0o755)
 		t.Cleanup(shutDir{dir: at, open: open}.reopen)
 		cfg := gamed(t, "stack member v1")
-		err := cleanBy(work, cfg, false, (&asked{}).run, &bytes.Buffer{})
+		err := clean(work, cfg, false, (&asked{}).run, &bytes.Buffer{})
 		if err == nil {
 			t.Errorf("%s: no error", name)
 		}
@@ -252,7 +252,7 @@ func TestCleanLeavesATrackedGoWorkSum(t *testing.T) {
 	work := cleaned(t, "root", map[string]string{"go.work.sum": "h1:x\n"})
 	gitAt(t, work.Dir(), "add", "go.work.sum")
 	var out bytes.Buffer
-	if err := cleanBy(work, blankConfig(), false, (&asked{}).run,
+	if err := clean(work, blankConfig(), false, (&asked{}).run,
 		&out); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestCleanStopsWhenGitCannotSayIfGoWorkSumIsTracked(t *testing.T) {
 	t.Parallel()
 	work := cleaned(t, "root", map[string]string{"go.work.sum": "h1:x\n"})
 	write(t, work.Path(".git", "index"), "not an index")
-	err := cleanBy(work, blankConfig(), false, (&asked{}).run,
+	err := clean(work, blankConfig(), false, (&asked{}).run,
 		&bytes.Buffer{})
 	if err == nil {
 		t.Error("clean went on when git could not say")

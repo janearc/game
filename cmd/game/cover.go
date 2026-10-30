@@ -1,12 +1,9 @@
 package main
 
-// game cover: how much of a project its tests run, file by file, for Go,
-// for C programs built as build-c builds them, and for Xcode schemes,
-// Swift and Objective-C alike.
+// game cover: how much of a project its Go tests run, file by file.
 //
 // Every file at 100% is what the bar asks; anything less is listed and
-// is the exit code. Libraries game fetched, and test files, are not
-// counted.
+// is the exit code.
 
 import (
 	"cmp"
@@ -16,11 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/janearc/game/internal/config"
 	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/repo"
+	"github.com/janearc/puzzlemouth/pzm"
 )
 
 // covered is one file's lines, or statements for Go: how many could run,
@@ -28,6 +27,9 @@ import (
 type covered struct {
 	path       string
 	count, ran int
+	// missed is the first line of each Go block the tests never ran, in
+	// order. only Go fills it.
+	missed []int
 }
 
 // errNotFull is a report with a file below 100%.
@@ -53,24 +55,27 @@ func (file covered) short() bool {
 	return file.ran < file.count
 }
 
-// coverVerb is game cover: Go with no word, or c or xcode.
-func coverVerb(here repo.Repo, _ config.Config, args []string) error {
-	return coverBy(here.Dir(), args, run, httpFetch, os.Stdout, os.Stderr)
+// coverVerb is game cover: Go, with no word.
+func coverVerb(here repo.Repo, _ config.Config, call pzm.Call) error {
+	return cover(here.Dir(), call.Args(), call.On("html"), run, call.Out())
 }
 
-// coverBy is coverVerb in dir, running tools with by, fetching with get.
-func coverBy(dir string, args []string, by runner, get fetcher,
-	out, errs io.Writer) error {
-	word, rest, said := verbWord(args)
-	switch {
-	case !said:
-		return coverGoBy(dir, by, out)
-	case word == "c":
-		return coverCBy(dir, rest, by, get, out, errs)
-	case word == "xcode":
-		return coverXcodeBy(dir, rest, by, out, errs)
+// cover is coverVerb in dir, running tools with by.
+func cover(dir string, args []string, html bool, by runner,
+	out io.Writer) error {
+	if word, _, said := verbWord(args); said {
+		return fmt.Errorf("cover: %q is a word; it takes none", word)
 	}
-	return fmt.Errorf("cover: %q is not c or xcode", word)
+	failed := coverGo(dir, by, out)
+	short := errors.Is(failed, errNotFull)
+	if !html || failed != nil && !short {
+		return failed
+	}
+	// the report is wanted most when a file is short.
+	if err := coverGoHTML(dir, by, out); err != nil {
+		return err
+	}
+	return failed
 }
 
 // leastRunFirst orders files by run share, least first, then by path.
@@ -113,26 +118,56 @@ func report(files []covered, out io.Writer) error {
 // goProfile is where game cover keeps Go's cover profile.
 const goProfile = "bin/.cover/go.out"
 
-// coverGoBy runs the Go tests in dir with a cover profile, by by, and
-// reports each file's statements.
-func coverGoBy(dir string, by runner, out io.Writer) error {
+// goHTML is where game cover --html keeps Go's html report.
+const goHTML = "bin/.cover/go.html"
+
+// goMeasured runs the Go tests in dir with a cover profile, by by, and
+// reads each file's statements from it. game cover reports them and game
+// check holds them to the floor.
+func goMeasured(dir string, by runner) ([]covered, error) {
 	err := os.MkdirAll(filepath.Join(dir, "bin", ".cover"), folderMode)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := by(dir, "go", "test", "-count=1",
 		"-coverprofile="+goProfile, "./..."); err != nil {
-		return err
+		return nil, err
 	}
 	profile, err := os.ReadFile(filepath.Join(dir, goProfile))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	files, err := goCovered(string(profile))
+	return goCovered(string(profile))
+}
+
+// coverGo measures the Go tests in dir, by by, and reports each file's
+// statements.
+func coverGo(dir string, by runner, out io.Writer) error {
+	files, err := goMeasured(dir, by)
 	if err != nil {
 		return err
 	}
 	return report(files, out)
+}
+
+// coverGoHTML turns the profile coverGo kept into go's html report and
+// says where it is.
+func coverGoHTML(dir string, by runner, out io.Writer) error {
+	if _, err := by(dir, "go", "tool", "cover", "-html="+goProfile,
+		"-o", goHTML); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "cover: html report at %s\n",
+		filepath.Join(dir, goHTML))
+	return err
+}
+
+// startLine is the line a profile's span begins on, from "12.3,14.2", and
+// nothing for a span it cannot read.
+func startLine(span string) int {
+	line, _, _ := strings.Cut(span, ".")
+	number, _ := strconv.Atoi(line)
+	return number
 }
 
 // errProfile is a cover profile line game cannot read.
@@ -145,7 +180,7 @@ const profileFields = 3
 // goCovered is a Go cover profile's statements, file by file. A block
 // listed twice counts once, run if either says so.
 func goCovered(profile string) ([]covered, error) {
-	type block struct{ count, ran int }
+	type block struct{ count, ran, line int }
 	blocks := map[string]map[string]block{}
 	for _, line := range strings.Split(profile, "\n") {
 		if line == "" || strings.HasPrefix(line, "mode:") {
@@ -167,6 +202,7 @@ func goCovered(profile string) ([]covered, error) {
 		}
 		seen := blocks[file][span]
 		seen.count = counted
+		seen.line = startLine(span)
 		if count.Positive(runs) {
 			seen.ran = counted
 		}
@@ -178,23 +214,13 @@ func goCovered(profile string) ([]covered, error) {
 		for _, each := range spans {
 			summed.count += each.count
 			summed.ran += each.ran
+			if count.Positive(each.count) && count.None(each.ran) {
+				summed.missed = append(summed.missed, each.line)
+			}
 		}
+		slices.Sort(summed.missed)
+		summed.missed = slices.Compact(summed.missed)
 		files = append(files, summed)
 	}
 	return files, nil
-}
-
-// counted says whether a file belongs in the report: not a library game
-// fetched, and not a test.
-func counted(path string) bool {
-	slashed := filepath.ToSlash(path)
-	base := filepath.Base(slashed)
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	return !strings.Contains(slashed, "/bin/.deps/") &&
-		!strings.HasPrefix(slashed, "bin/.deps/") &&
-		!strings.Contains(slashed, "/Tests/") &&
-		!strings.HasPrefix(slashed, "Tests/") &&
-		!strings.HasSuffix(stem, "_test") &&
-		!strings.HasSuffix(stem, "Tests") &&
-		!strings.HasSuffix(stem, "Test")
 }

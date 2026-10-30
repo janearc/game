@@ -326,8 +326,8 @@ func TestTestsAndNames(t *testing.T) {
 		"protest.md":               "synergy\n",
 		"store_test.go":            "package s // synergy\n",
 		"clients/go/flipr_test.go": "package s // synergy\n",
-		"test_ingest.c":            "void f(void) { setuid(0); }\n",
-		"ingest.c":                 "void f(void) { setuid(0); }\n",
+		"test_ingest.go":           "package s // synergy\n",
+		"ingest.go":                "package s // synergy\n",
 	}
 	got := map[string]bool{}
 	for _, one := range ranOn(t, linter, files) {

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/janearc/game/internal/count"
-	"go.uber.org/mock/gomock"
 )
 
 // TestAslrGoWithNoCmdSaysSoAndBuildsNothing: no cmd/ is refused by
@@ -20,8 +19,8 @@ import (
 func TestAslrGoWithNoCmdSaysSoAndBuildsNothing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	stand := NewMockcommandRunner(gomock.NewController(t))
-	err := aslrGoBy(dir, nil, stand.Run, &bytes.Buffer{})
+	stand := notRun(t)
+	err := aslrGo(dir, nil, stand, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "no cmd/ directory") {
 		t.Errorf("no cmd: %v", err)
 	}
@@ -39,22 +38,10 @@ func TestAslrGoWithABinThatIsAFileBuildsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "bin"), "a file\n")
-	stand := NewMockcommandRunner(gomock.NewController(t))
-	err := aslrGoBy(dir, nil, stand.Run, &bytes.Buffer{})
+	stand := notRun(t)
+	err := aslrGo(dir, nil, stand, &bytes.Buffer{})
 	if !errors.Is(err, syscall.EEXIST) && !errors.Is(err, syscall.ENOTDIR) {
 		t.Errorf("bin that is a file: %v", err)
-	}
-}
-
-// TestAslrCWithAFlagItDoesNotKnowBuildsNothing: the flag's error is the
-// answer, and nothing is built from what followed it.
-func TestAslrCWithAFlagItDoesNotKnowBuildsNothing(t *testing.T) {
-	t.Parallel()
-	stand := NewMockcommandRunner(gomock.NewController(t))
-	var out, errs bytes.Buffer
-	err := aslrCBy(t.TempDir(), []string{"-nonesuch", "t.c"}, stand.Run, noFetch, &out, &errs)
-	if !errors.Is(err, errForeignFlags) {
-		t.Errorf("a bad flag: %v", err)
 	}
 }
 

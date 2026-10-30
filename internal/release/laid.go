@@ -3,10 +3,10 @@ package release
 import (
 	"fmt"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/patch"
 	"github.com/janearc/game/internal/repo"
 )
 
@@ -72,12 +72,12 @@ type ownPatch struct{ file, object string }
 // they're read from HEAD, not the index. the index also holds the members
 // laid so far, and a member's own files are never the stack's patches.
 //
-// two places for one member are refused, as game patch refuses them.
-// which came first would be a guess.
+// two places for one member are refused, as game patch refuses them: the
+// places and the refusal are internal/patch's.
 func (lay *layout) series(here repo.Repo, name string) ([]ownPatch, error) {
 	var found string
 	var series []ownPatch
-	for _, dir := range lay.places(name) {
+	for _, dir := range patch.Places(lay.patches, name) {
 		// -z, so a name git would quote, as it does one with an
 		// accent in it, comes as committed and is laid like any other
 		listed, err := here.Git("ls-tree", "-r", "-z", "HEAD", "--",
@@ -90,24 +90,11 @@ func (lay *layout) series(here repo.Repo, name string) ([]ownPatch, error) {
 			continue
 		}
 		if found != "" {
-			return nil, fmt.Errorf("%s's patches are in both "+
-				"%s and %s; keep them in one place",
-				name, found, dir)
+			return nil, patch.Twice(name, found, dir)
 		}
 		found, series = dir, here
 	}
 	return series, nil
-}
-
-// places is where a member's patches may be in the stack's commit.
-// patches/NAME comes first, then NAME under each directory .game names.
-func (lay *layout) places(name string) []string {
-	places := []string{path.Join("patches", name)}
-	for _, dir := range lay.patches {
-		under := filepath.ToSlash(dir)
-		places = append(places, path.Join(under, name))
-	}
-	return places
 }
 
 // patchesIn is the .patch files directly in dir, from ls-tree -r -z.

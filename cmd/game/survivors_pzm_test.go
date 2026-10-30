@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -21,11 +20,11 @@ func TestNormalizePzmArgsOfNoWordsIsNoWords(t *testing.T) {
 	}
 }
 
-// TestNormalizePzmArgsRenamesOnlyTheFirstWord: who and --help-claude are
-// renamed first and nowhere else.
+// TestNormalizePzmArgsRenamesOnlyTheFirstWord: who is renamed first and
+// nowhere else.
 func TestNormalizePzmArgsRenamesOnlyTheFirstWord(t *testing.T) {
 	t.Parallel()
-	args := []string{"stack", "who", "--help-claude"}
+	args := []string{"stack", "who", "history"}
 	if got := normalizePzmArgs(args); !slices.Equal(got, args) {
 		t.Errorf("later words became %q", got)
 	}
@@ -41,23 +40,6 @@ func TestNormalizePzmArgsLeavesAWordAndALongFlagAlone(t *testing.T) {
 	}
 	if got := normalizePzmArgs([]string{"-only", "-workers=3"}); !slices.Equal(got, []string{"--only", "--workers=3"}) {
 		t.Errorf("legacy flags became %q", got)
-	}
-}
-
-// TestSanitizedArgvRefusesANameThatIsADotOrADoubleDot: . and .. leave
-// no program name in bin/, as a slash leaves bin/.
-func TestSanitizedArgvRefusesANameThatIsADotOrADoubleDot(t *testing.T) {
-	t.Parallel()
-	for _, name := range []string{".", "..", "a/b", "/a"} {
-		_, _, err := sanitizedArgv(sanitized{name: name, suffix: "asan",
-			sources: []string{"a.c"}})
-		if !errors.Is(err, errBadName) {
-			t.Errorf("name %q: %v", name, err)
-		}
-	}
-	if _, program, err := sanitizedArgv(sanitized{name: "ok", suffix: "asan",
-		sources: []string{"a.c"}}); err != nil || program != "bin/ok-asan" {
-		t.Errorf("a plain name: %q, %v", program, err)
 	}
 }
 

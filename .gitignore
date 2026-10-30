@@ -4,3 +4,5 @@ bin/
 # rapid writes a failing draw here, for reproducing it by hand
 **/testdata/rapid/
 /game
+# `go build` run inside cmd/game writes the binary here
+/cmd/game/game

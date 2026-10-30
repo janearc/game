@@ -12,6 +12,7 @@ import (
 	"github.com/janearc/game/internal/config"
 	"github.com/janearc/game/internal/count"
 	"github.com/janearc/game/internal/repo"
+	"github.com/janearc/puzzlemouth/pzm"
 )
 
 // signed matches the line this house puts last in a commit message, the
@@ -20,7 +21,7 @@ import (
 var signed = regexp.MustCompile(`^[a-z]{1,4}/[0-9a-f]{6,}$`)
 
 // whoVerb is game who.
-func whoVerb(here repo.Repo, cfg config.Config, _ []string) error {
+func whoVerb(here repo.Repo, cfg config.Config, _ pzm.Call) error {
 	return who(here, cfg, os.Stdout)
 }
 
