@@ -134,14 +134,86 @@ func TestMutantsWritesTheReportWhereAsked(t *testing.T) {
 	written, readErr := os.ReadFile(report)
 	text := string(written)
 	if readErr != nil || strings.Contains(text, "partial") ||
+		strings.Contains(text, runningLine) ||
 		!strings.Contains(text, "survived   tiny.go:") ||
 		!strings.Contains(text, "killed     tiny.go:") {
 		t.Errorf("wrote %q (%v), said:\n%s", written, readErr, said)
 	}
 	nowhere := filepath.Join(t.TempDir(), "no", "r.txt")
-	if _, err := mutated(t, "--report", nowhere); err == nil ||
-		strings.Contains(err.Error(), "survived") {
-		t.Errorf("a report that could not be written: %v", err)
+	said, err = mutated(t, "--report", nowhere)
+	if err == nil || !strings.Contains(err.Error(), "--report") ||
+		strings.Contains(said, "mutants: ") {
+		t.Errorf("a report that could not be written was not refused "+
+			"before the run: %v\n%s", err, said)
+	}
+}
+
+// TestTheReportHoldsEachFinishedMutantAsItComes: a mutant's line is in the
+// report file the moment it finishes, killed or not, before the run
+// settles, so a run killed outright has still left it. --again reads the
+// survivor back, and nothing is said on out.
+func TestTheReportHoldsEachFinishedMutantAsItComes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "r.txt")
+	written, err := openReport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer written.close()
+	var out strings.Builder
+	record := written.recordOn(&out)
+	survived := "survived   tiny.go:7 unheld\tthe tests pass"
+	killed := "killed     tiny.go:9 held\tTestHeld"
+	record(survived)
+	record(killed)
+	text, err := os.ReadFile(path)
+	want := runningLine + "\n" + survived + "\n" + killed + "\n"
+	if err != nil || string(text) != want {
+		t.Errorf("the report holds %q: %v", text, err)
+	}
+	if out.Len() != count.Nothing {
+		t.Errorf("recording said %q", out.String())
+	}
+	again := mutants.ParseAgain(string(text))
+	if !again["unheld"] || len(again) != len([]string{"unheld"}) {
+		t.Errorf("--again reads %v from the report", again)
+	}
+}
+
+// TestAReportThatStopsBeingWrittenIsSaidOnce is the anti-test: when the
+// file can no longer be written, the run says so once on out, and goes
+// on.
+func TestAReportThatStopsBeingWrittenIsSaidOnce(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "r.txt")
+	written, err := openReport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written.file.Close()
+	var out strings.Builder
+	record := written.recordOn(&out)
+	record("survived   tiny.go:7 first\twhy")
+	record("survived   tiny.go:8 second\twhy")
+	said := out.String()
+	if strings.Count(said, "stopped being written") != len([]string{said}) {
+		t.Errorf("said:\n%s", said)
+	}
+}
+
+// TestNoReportAskedForWritesNoFile is the anti-test: with no --report,
+// recording writes nothing and says nothing.
+func TestNoReportAskedForWritesNoFile(t *testing.T) {
+	t.Parallel()
+	written, err := openReport("")
+	if err != nil || written.file != nil {
+		t.Fatalf("no report asked for opened %v: %v", written.file, err)
+	}
+	defer written.close()
+	var out strings.Builder
+	written.recordOn(&out)("survived   tiny.go:7 alone\twhy")
+	if out.Len() != count.Nothing {
+		t.Errorf("said %q", out.String())
 	}
 }
 

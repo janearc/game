@@ -32,6 +32,10 @@ import (
 // and leaves running, as go test leaves the test binary.
 // hold.n is a wait that go test starts and leaves holding the output it
 // was given, then exits without waiting for it.
+//
+// every run leaves a folder in its TMPDIR, as a test binary killed at its
+// first failure leaves its own. before it notes its TMPDIR it notes in
+// outlived every earlier run's TMPDIR that is still there.
 const goStubScript = `#!/bin/sh
 d="$GOSTUB"
 echo "$$" >> "$d/pids"
@@ -47,7 +51,13 @@ list)
 	exec "$REAL_GO" "$@" ;;
 test)
 	pwd >> "$d/where"
+	if [ -f "$d/tmpdirs" ]; then
+		while read -r was; do
+			if [ -d "$was" ]; then echo "$was" >> "$d/outlived"; fi
+		done < "$d/tmpdirs"
+	fi
 	echo "$TMPDIR" >> "$d/tmpdirs"
+	if [ -n "$TMPDIR" ]; then mkdir -p "$TMPDIR/left-by-a-killed-test" 2>/dev/null; fi
 	n=$(cat "$d/count" 2>/dev/null || echo 0); n=$((n+1))
 	echo "$n" > "$d/count"
 	{ pwd; echo "$@"; find . | sort; } > "$d/tree.$n"
@@ -255,6 +265,13 @@ func (stub goStub) tempDirs(t *testing.T) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return strings.Fields(string(noted))
+}
+
+// outlived is every TMPDIR a later go test found still there. A run that
+// removes each go test's folder as it returns has none.
+func (stub goStub) outlived() []string {
+	noted, _ := os.ReadFile(filepath.Join(stub.dir, "outlived"))
 	return strings.Fields(string(noted))
 }
 

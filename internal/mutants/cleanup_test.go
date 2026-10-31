@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/janearc/game/internal/count"
+	"github.com/janearc/game/internal/mutants"
 )
 
 // emptied is whether the folder holds nothing.
@@ -22,10 +23,10 @@ func emptied(t *testing.T, place string) bool {
 	return len(left) == count.Nothing
 }
 
-// the tests of a mutant are given a temp folder inside the run's copies.
-// what go and the tests leave in it goes when the run does. it is there
-// when go test runs. each worker has one. it is not the folder the run
-// was started with.
+// the tests of a mutant are given a temp folder of their own, inside
+// their worker's, inside the run's copies. no two go tests share one. it
+// is not the folder the run was started with, and nothing is left when
+// the run ends.
 func TestEachGoTestGetsATempFolderInsideTheRunsCopies(t *testing.T) {
 	note := placed(t)
 	stub := stubGo(t)
@@ -36,15 +37,44 @@ func TestEachGoTestGetsATempFolderInsideTheRunsCopies(t *testing.T) {
 	if len(temps) != len(tinyNames)+count.One {
 		t.Fatalf("go test ran with %d temp folders: %v", len(temps), temps)
 	}
+	seen := map[string]bool{}
 	for _, temp := range temps {
 		inside, err := filepath.Rel(note.place, temp)
-		if err != nil || !strings.HasPrefix(inside, "game-mutants-") ||
-			strings.Count(inside, string(filepath.Separator)) != count.One {
-			t.Errorf("go test was given TMPDIR %s, not a folder of the run's copies", temp)
+		parts := strings.Split(inside, string(filepath.Separator))
+		if err != nil || len(parts) != len([]string{"run", "worker", "test"}) ||
+			!strings.HasPrefix(parts[count.Nothing], "game-mutants-") ||
+			!strings.HasPrefix(parts[count.One], "tmp-") || seen[temp] {
+			t.Errorf("go test was given TMPDIR %s, not a folder of its own in "+
+				"its worker's", temp)
 		}
+		seen[temp] = true
 	}
 	if !emptied(t, note.place) {
 		t.Error("the run left its temp folders behind")
+	}
+}
+
+// TestNoGoTestsTempFolderOutlivesIt: each go test leaves a folder in its
+// TMPDIR, as a test binary killed at its first failure does, and the next
+// go test finds none of the earlier ones still there. a long run does not
+// pile them up until it ends.
+func TestNoGoTestsTempFolderOutlivesIt(t *testing.T) {
+	placed(t)
+	stub := stubGo(t)
+	root := fixture(t, "")
+	stub.answer(t, count.One, "ok\n", count.Nothing)
+	for call := range len(tinyNames) {
+		stub.answer(t, call+count.Next(count.One),
+			"--- FAIL: TestX (0.00s)\nFAIL\n", count.One)
+	}
+	one := mutants.Ask(count.One, secondsHeld(t, "test-timeout-seconds")).
+		Nowed(time.Now).QuietAfter(quiet).Writing(mutants.Disk())
+	runBefore(t, context.Background(), root, one)
+	if ran := stub.tempDirs(t); len(ran) <= count.One {
+		t.Fatalf("too few go tests to tell: %v", ran)
+	}
+	if outlived := stub.outlived(); len(outlived) != count.Nothing {
+		t.Errorf("go tests' temp folders outlived them: %v", outlived)
 	}
 }
 

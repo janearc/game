@@ -92,6 +92,13 @@ func mutate(here repo.Repo, told mutantArgs, call pzm.Call) error {
 	if told.bench {
 		opts = opts.Benchmarking()
 	}
+	// the report gets each mutant as it finishes, so a run killed outright
+	// has still left every line it finished.
+	written, err := openReport(told.report)
+	if err != nil {
+		return err
+	}
+	defer written.close()
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -106,7 +113,8 @@ func mutate(here repo.Repo, told mutantArgs, call pzm.Call) error {
 	// what is written then is not written again.
 	tell := &settled{ctx: ctx, out: out, path: told.report}
 	found, err := mutants.Run(ctx, here.Dir(),
-		opts.Settling(tell.settle).Deciding(decidedOn(out)))
+		opts.Settling(tell.settle).Deciding(decidedOn(out)).
+			Recording(written.recordOn(out)))
 	stopped := errors.Is(err, context.Canceled)
 	if err != nil && !stopped {
 		return err
@@ -450,6 +458,75 @@ func toStderr(said string) {
 // the dearest first, as slices.SortFunc asks.
 func dearestFirst(one, other mutants.Suite) int {
 	return cmp.Compare(other.Alone(), one.Alone())
+}
+
+// runningLine is the report's first line while its run goes on. The
+// whole report replaces it when the run settles. ParseAgain reads only
+// survived and timed out lines, so --again can take a report a run left
+// when it was killed.
+const runningLine = "running: each mutant is written here as it " +
+	"finishes; the whole report replaces this when the run ends"
+
+// reportFile is the report a run writes to as it goes. Its file is nil
+// when no report was asked for.
+type reportFile struct {
+	file *os.File
+	// failed is the first error writing to the file. Once there is one,
+	// the run says it and writes nothing more to the file.
+	failed error
+}
+
+// openReport makes the report at path, empty but for runningLine, before
+// any mutant runs. It refuses a path it cannot write to, so a run does
+// not find that out at its end. No path asks for no report.
+func openReport(path string) (*reportFile, error) {
+	if path == "" {
+		return &reportFile{}, nil
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
+		ownerWrites)
+	if err != nil {
+		return nil, fmt.Errorf("--report: %w", err)
+	}
+	if _, err := fmt.Fprintln(file, runningLine); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("--report: %w", err)
+	}
+	return &reportFile{file: file}, nil
+}
+
+// close closes the report's file, if it has one.
+func (written *reportFile) close() {
+	if written.file != nil {
+		written.file.Close()
+	}
+}
+
+// recordOn writes every finished mutant's line to the report as it
+// comes, killed ones too. The first write that fails is said on out,
+// once, and the run goes on without the file.
+func (written *reportFile) recordOn(out io.Writer) func(string) {
+	return recorder{out: out, written: written}.record
+}
+
+// recorder writes finished lines to a report, and says on out when it
+// cannot.
+type recorder struct {
+	out     io.Writer
+	written *reportFile
+}
+
+// record writes one line to the report.
+func (to recorder) record(line string) {
+	written := to.written
+	if written.file == nil || written.failed != nil {
+		return
+	}
+	if _, err := fmt.Fprintln(written.file, line); err != nil {
+		written.failed = err
+		fmt.Fprintf(to.out, "the report stopped being written as the "+
+			"run went: %v\n", err)
+	}
 }
 
 // decidedOn says each decided survivor on out as it comes.

@@ -1,5 +1,10 @@
 # changelog
 
+## v0.4.4
+
+- fixed bug where ooms discarded mutants run
+- removed mutant trees as run progresses
+
 ## v0.4.3
 
 - one regression in pzm

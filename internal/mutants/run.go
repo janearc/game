@@ -55,6 +55,9 @@ type Options struct {
 	settled func(Report)
 	// decided gets each survivor's report line if it is set.
 	decided func(string)
+	// recorded gets every mutant's report line as it finishes, whatever
+	// its state, if it is set.
+	recorded func(string)
 	// place is the folder the copies of the tree are made in if it is set.
 	// The caller chooses it. Where the copies are can decide whether the
 	// tests pass in them.
@@ -127,6 +130,14 @@ func (asked Options) Placing(place string) Options {
 // not given.
 func (asked Options) Deciding(decided func(string)) Options {
 	asked.decided = decided
+	return asked
+}
+
+// Recording is the options giving recorded the line Lines has for every
+// mutant as it finishes, killed ones too. A caller writes them down as
+// they come, so a run killed outright has left every line it finished.
+func (asked Options) Recording(recorded func(string)) Options {
+	asked.recorded = recorded
 	return asked
 }
 
@@ -729,9 +740,10 @@ func copyTrees(ctx context.Context, root string, workers int,
 	return temp, trees, nil
 }
 
-// scratchOf is the temp folder a worker's go test is given: a folder
-// beside its tree, inside the folder of the run's copies. What go and the
-// tests leave there when they are killed goes with the copies.
+// scratchOf is the worker's temp folder: a folder beside its tree, inside
+// the folder of the run's copies. Each go test is given a folder of its
+// own in it, removed when that go test returns; anything left past that
+// goes with the copies.
 //
 // It's beside the tree and not in it, so no mutant sees it.
 func scratchOf(tree string) string {
@@ -974,8 +986,12 @@ func follow(done <-chan int, outcomes []Outcome, total int, opts Options) {
 	}
 }
 
-// tellDecided gives decided the line of a survivor or timeout.
+// tellDecided gives decided the line of a survivor or timeout, and
+// recorded the line of any mutant.
 func (asked Options) tellDecided(made Outcome) {
+	if asked.recorded != nil {
+		asked.recorded(made.line())
+	}
 	if asked.decided == nil {
 		return
 	}
@@ -1180,9 +1196,17 @@ func test(
 		"-timeout", timeout.String(), "./"+filepath.ToSlash(inModule),
 	)
 	cmd.Dir = filepath.Join(tree, in.module)
-	// the temp folder is the worker's own, inside the run's copies
+	// each go test has a temp folder of its own, inside the worker's, and
+	// it goes as soon as go test returns. a test binary killed at its
+	// first failure or its timeout never cleans up after itself, and a
+	// run of hours left every one of those behind until it ended.
+	scratch, err := os.MkdirTemp(scratchOf(tree), "go-test-")
+	if err != nil {
+		return nil, err, false
+	}
+	defer os.RemoveAll(scratch)
 	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=",
-		"TMPDIR="+scratchOf(tree))
+		"TMPDIR="+scratch)
 	cmd.WaitDelay = waitDelay
 	// go leads a group of its own, and stopping the run stops the group
 	procgroup.Leading(cmd)

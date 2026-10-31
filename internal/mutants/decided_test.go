@@ -103,6 +103,40 @@ func TestARunSaysNothingOfKilledMutants(t *testing.T) {
 	}
 }
 
+// TestARunRecordsEveryMutantAsItFinishes: recorded gets the line of each
+// mutant, the killed one too, as the report has it.
+func TestARunRecordsEveryMutantAsItFinishes(t *testing.T) {
+	root := answerOneEach(t)
+	got := &decidedLines{}
+	files, _ := disk(t)
+	opts := askFor(count.One, byTheSecond).Recording(got.say)
+	report := runWith(t, root, opts, files)
+	want := slices.Clone(report.Lines())
+	slices.Sort(want)
+	recorded := slices.Clone(got.lines)
+	slices.Sort(recorded)
+	if !slices.Equal(recorded, want) {
+		t.Errorf("recorded\n%q\nwant\n%q", recorded, want)
+	}
+	if countsOf(report)["killed"] == count.Nothing {
+		t.Fatalf("fixture has no killed mutant: %q", report.Lines())
+	}
+}
+
+// TestARunRecordsNothingWhenNotAsked is the anti-test: with no recorded,
+// deciding still works and nothing else is given.
+func TestARunRecordsNothingWhenNotAsked(t *testing.T) {
+	root := answerOneEach(t)
+	got, recorded := &decidedLines{}, &decidedLines{}
+	files, _ := disk(t)
+	opts := askFor(count.One, byTheSecond).Deciding(got.say)
+	runWith(t, root, opts, files)
+	if len(recorded.lines) != count.Nothing ||
+		len(got.lines) != count.Next(count.One) {
+		t.Errorf("decided %q, recorded %q", got.lines, recorded.lines)
+	}
+}
+
 // the run's own progress lines are not what is said of decisions.
 func TestDecidedLinesAreNotProgressLines(t *testing.T) {
 	root := answerOneEach(t)

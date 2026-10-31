@@ -219,6 +219,45 @@ func TestASignalledRunWritesAPartialReportAndExitsNonzero(t *testing.T) {
 	}
 }
 
+// TestAKilledRunHasLeftEveryMutantItFinished: a run ended by SIGKILL,
+// as the out-of-memory killer ends one, gets no chance to settle. Its
+// report still holds the running line and the mutant it finished, so
+// the night is not lost with it.
+func TestAKilledRunHasLeftEveryMutantItFinished(t *testing.T) {
+	t.Parallel()
+	run := startRun(t, t.TempDir(), stopPlace(t))
+	run.waitForNote(notedRuns)
+	run.waitForReport("\nkilled ")
+	pid := run.cmd.Process.Pid
+	if pid < lowestGroup {
+		t.Fatalf("the run's pid %d leads no group of its own", pid)
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	run.cmd.Wait()
+	written, err := os.ReadFile(run.report)
+	text := string(written)
+	if err != nil || !strings.HasPrefix(text, runningLine+"\n") ||
+		!strings.Contains(text, "\nkilled ") ||
+		strings.Contains(text, "partial run: ") {
+		t.Errorf("a killed run left %q: %v\n%s", text, err, run.out)
+	}
+}
+
+// waitForReport waits until the run's report holds what was asked.
+func (run stoppable) waitForReport(holds string) {
+	run.t.Helper()
+	for range stopLooks {
+		body, _ := os.ReadFile(run.report)
+		if strings.Contains(string(body), holds) {
+			return
+		}
+		time.Sleep(stopEvery)
+	}
+	run.t.Fatalf("the report never held %q", holds)
+}
+
 // notedPids is the pids of the fixture's test binaries, as its tests
 // noted them.
 func notedPids(t *testing.T, note string) []int {
