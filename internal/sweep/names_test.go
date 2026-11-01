@@ -49,15 +49,26 @@ func TestTreeReadsEachFilesNameForWhatItIsHeldTo(t *testing.T) {
 	}
 }
 
+// TestTreeFindsAHarnessIDInAName: a name holding an id of the harness's
+// shape, capitals after its first digit, is a hit in that file.
+func TestTreeFindsAHarnessIDInAName(t *testing.T) {
+	name := "run-" + harnessID() + ".log"
+	want := "session urls (name) in " + name
+	if got := kinds(nameFixture(t, []string{name}, nil)); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
 // TestTreeLeavesNamesThatOnlyLookLikeLeaks: an asset name with the shape
-// of an address, a directory called home and a name that goes on in
-// words after a session are not hits. Addresses and machine paths are
-// not looked for in names.
+// of an address, a directory called home, and names that go on in a word
+// after the underscore, at the start of a name or inside it, are not
+// hits. Addresses and machine paths are not looked for in names.
 func TestTreeLeavesNamesThatOnlyLookLikeLeaks(t *testing.T) {
 	at := "@"
 	hits := nameFixture(t, []string{
 		"logo" + at + "2x.png", "home/readme.md", "Us" + "ers/readme.md",
-		"session_notes.md", "ada.md", "lovelace.md",
+		"session_notes.md", "metal/slayer_sess" + "ion_buffer.h", "ada.md",
+		"lovelace.md",
 	}, nil)
 	if got := kinds(hits); got != "" {
 		t.Errorf("names that only look like leaks were hit:\n%s", got)

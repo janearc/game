@@ -1,5 +1,9 @@
 # changelog
 
+## v0.4.5
+
+- fixed false positive for session ids in sweep
+
 ## v0.4.4
 
 - fixed bug where ooms discarded mutants run

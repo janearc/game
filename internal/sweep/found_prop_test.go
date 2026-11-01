@@ -134,3 +134,32 @@ func TestBakeRefusesAnEntryLongerThanAName(t *testing.T) {
 	}
 	rapid.Check(t, prop.check)
 }
+
+// What follows the underscore, and what stands before the word. standing
+// is drawn from an alphabet that can spell no host, path, address, uuid
+// or word, so nothing in it is a hit of its own.
+var (
+	idDigit  = rapid.StringMatching(`[0-9]`)
+	idTail   = rapid.StringMatching(`[0-9A-Za-z]{7,30}`)
+	nameWord = rapid.StringMatching(`[a-z][a-z0-9]{0,12}`)
+	standing = rapid.StringMatching(`[ /"=:%_\\x0]{0,6}`)
+)
+
+// any id of the harness's shape, a digit and seven or more letters or
+// digits after the underscore, is found whatever stands before it; a
+// name that goes on in a word after the underscore is not.
+func TestAnyIDIsFoundAndNoWordIs(t *testing.T) {
+	rapid.Check(t, func(draw *rapid.T) {
+		before := standing.Draw(draw, "before")
+		id := before + "sess" + "ion_" + idDigit.Draw(draw, "digit") +
+			idTail.Draw(draw, "tail")
+		word := before + "sess" + "ion_" + nameWord.Draw(draw, "word")
+		got := proseKinds(t, sweep.Never{}, id, word)
+		if !strings.Contains(got[count.First], "session urls") {
+			draw.Fatalf("a session id was missed: %q", id)
+		}
+		if strings.Contains(got[count.Next(count.First)], "session urls") {
+			draw.Fatalf("a name was taken for a session: %q", word)
+		}
+	})
+}

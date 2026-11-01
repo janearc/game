@@ -31,11 +31,22 @@ func Found(kind, file string) Hit {
 // file.
 func (hit Hit) String() string { return hit.kind + " in " + hit.file }
 
+// sessionID is a session id: the word, an underscore, a digit, and seven
+// or more letters or digits. The harness's ids are thirty-two long and
+// start with a digit after the underscore (read on this machine,
+// 2026-11-01). A file's body and its name are held to this one pattern.
+//
+// Whatever stands before an id, it is one: a slash, a quote, an escaped
+// newline, a percent-encoded slash, or a name joined on with an
+// underscore. A name that goes on in a word after the underscore, as
+// slayer's metal bridge names its c functions, is not.
+const sessionID = "sess" + "ion_[0-9][0-9A-Za-z]{7}"
+
 // the patterns avoid matching this source when a tree is swept.
 var (
 	trailers = regexp.MustCompile("Co-Auth" + "ored-By|Cla" + "ude-Session")
 	urls     = regexp.MustCompile(
-		"cla" + `ude\.ai|anth` + "ropic|sess" + "ion_[0-9a-f]",
+		"cla" + `ude\.ai|anth` + "ropic|" + sessionID,
 	)
 	uuids = regexp.MustCompile(
 		`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`,
@@ -270,10 +281,9 @@ var separators = strings.NewReplacer("-", " ", "_", " ", ".", " ", "/", " ")
 // inName is added to the kind of a hit in a file's name.
 const inName = " (name)"
 
-// sessionNames is the session id pattern for names. It is the word then
-// an underscore then eight hex digits. Names that go on in words are not
-// one.
-var sessionNames = regexp.MustCompile("sess" + "ion_[0-9a-f]{8}")
+// sessionNames is the session id pattern for names: a body's, sessionID.
+// Names that go on in words are not one.
+var sessionNames = regexp.MustCompile(sessionID)
 
 // inNames is the fixed patterns a file's name is held to. Addresses and
 // machine paths are left out. Asset names for high density screens have

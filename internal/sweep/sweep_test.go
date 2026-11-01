@@ -121,6 +121,47 @@ func TestPatterns(t *testing.T) {
 	}
 }
 
+// harnessID is a session id of the harness's shape, thirty-two long with
+// a digit after the underscore, built from pieces so that this file
+// never holds one.
+func harnessID() string {
+	return "sess" + "ion_01" + "AbCdEfGhIjKlMnOpQrStUv"
+}
+
+// a session id is one whatever stands before it, with no host beside it
+// to give it away: at the start of a line, after a space, a slash, a
+// quote, an equals or a colon, a percent-encoded slash, an escaped
+// newline in a json string, or a name joined on with an underscore.
+func TestASessionIDIsFoundWhateverStandsBeforeIt(t *testing.T) {
+	var texts []string
+	for _, before := range []string{"", "see ", "/code/", `"id":"`,
+		"id=", "id: ", "next=%2Fcode%2F", `"text":"line\n`, "log_"} {
+		texts = append(texts, before+harnessID())
+	}
+	for place, got := range proseKinds(t, sweep.Never{}, texts...) {
+		if !strings.Contains(got, "session urls") {
+			t.Errorf("a session id was missed: %q", texts[place])
+		}
+	}
+}
+
+// The anti-test: a name that goes on in a word after the underscore is
+// no session id, as slayer's metal bridge names its c functions; nor is
+// a digit too few to be an id.
+func TestANameThatGoesOnInAWordIsNotASession(t *testing.T) {
+	texts := []string{
+		"int slayer_sess" + "ion_buffer(void *s, long length);",
+		"// slayer_sess" + "ion_dispatch adds a kernel to the batch",
+		"see sess" + "ion_notes.md",
+		"the sess" + "ion_7abc of last week",
+	}
+	for place, got := range proseKinds(t, sweep.Never{}, texts...) {
+		if strings.Contains(got, "session urls") {
+			t.Errorf("a name was taken for a session: %q", texts[place])
+		}
+	}
+}
+
 // an address in a documentation domain is nobody's and does not stop a
 // release; a real one does.
 func TestReservedDomainsAreNotAddresses(t *testing.T) {
