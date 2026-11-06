@@ -17,7 +17,7 @@ syn match gameBlockKey "^\s\+\(road\|set\)\>"
 " dist is the remote that publishes, so it stands out.
 syn match gameDist "^\s\+dist\>"
 
-syn match gameLintRule "^lint\s\+\zs\(width\|rows\|paragraph\|comments\|print\|exclaim\|shout\|words\|chain\|commas\|opener\|history\|harden\|allow\)\>"
+syn match gameLintRule "^lint\s\+\zs\(width\|rows\|paragraph\|comments\|print\|exclaim\|shout\|abbreviations\|words\|chain\|commas\|opener\|history\|harden\|allow\)\>"
 syn match gameSweepKind "\<\(paths\|sessions\|uuids\|emails\|word\)\>"
 syn match gameName "^\s*\(set\|needs\|stack\)\s\+\zs\S\+"
 syn match gameNumber "\s\zs\d\+\>"

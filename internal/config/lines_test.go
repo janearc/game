@@ -473,3 +473,17 @@ func TestAProjectKeepsItsRoadAndDist(t *testing.T) {
 		t.Errorf("a tree with no block: held %v, %v", held, err)
 	}
 }
+
+// TestAbbreviationsAreMerged: across members, abbreviations are one list,
+// each word once, as banned words are.
+func TestAbbreviationsAreMerged(t *testing.T) {
+	got := config.Strictest(
+		[]config.Rule{config.Ruled("abbreviations", "BITPIX", "NAXIS")},
+		[]config.Rule{config.Ruled("abbreviations", "NAXIS", "SARAO")},
+	)
+	if len(got) != 1 || got[0].Name() != "abbreviations" ||
+		!slices.Equal(got[0].Args(), []string{"BITPIX", "NAXIS",
+			"SARAO"}) {
+		t.Fatalf("got %+v", got)
+	}
+}

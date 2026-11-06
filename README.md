@@ -142,11 +142,16 @@ its `--age` and `--who`:
 
     main.build         the commit, short, with -dirty when the tree is
     main.built         that commit's time
-    main.stampedWho    the session and machine that built it, jm/4b732342 on
+    main.who           the session and machine that built it, jm/4b732342 on
                        loft, or no session on loft when the environment held
                        no session id, or none shaped like one
-    main.stampedSids   the last three session lines that end the commits
+    main.sids          the last three session lines that end the commits
                        behind it: what the messages say, not a signature
+
+who and sids are puzzlemouth's names. the linker passes over a name a
+program does not declare, so the same strings go into main.sessions too,
+as carrie, libninja, nilgai, slayer and celestial-data name it, and into
+game's own main.stampedWho and main.stampedSids: game has a who verb.
 
 settings: `~/.config/game/config`, a block per project, then `.game`,
 which names its project. `example/config` is a start.

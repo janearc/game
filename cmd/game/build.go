@@ -155,15 +155,22 @@ func shortCommit(here repo.Repo) string {
 // stamped is the commit a build is at, marked dirty when the tree is,
 // and the linker flags that write it, its time, its maker and the
 // session lines into the binary.
+//
+// The maker and the sessions go under every name a main package keeps
+// them by: puzzlemouth's who and sids, the sessions five projects
+// declare, and game's own stampedWho and stampedSids. The linker passes
+// over a name a program does not declare.
 func stamped(here repo.Repo, maker string) (commit, stamp string) {
 	commit = shortCommit(here)
 	when, _ := here.Git("log", "-1", "--format=%cI")
 	sids := sessions(here)
-	stamp = fmt.Sprintf(
-		"-X main.build=%s -X main.built=%s -X 'main.stampedWho=%s' "+
-			"-X main.stampedSids=%s",
-		commit, when, maker, sids,
-	)
+	stamp = fmt.Sprintf("-X main.build=%s -X main.built=%s", commit, when)
+	for _, name := range []string{"who", "stampedWho"} {
+		stamp += fmt.Sprintf(" -X 'main.%s=%s'", name, maker)
+	}
+	for _, name := range []string{"sids", "sessions", "stampedSids"} {
+		stamp += fmt.Sprintf(" -X main.%s=%s", name, sids)
+	}
 	return commit, stamp
 }
 

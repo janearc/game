@@ -125,6 +125,9 @@ type Lint struct {
 	history bool
 	words   *regexp.Regexp
 	allow   map[string][]string // file to the rules it is let off
+	// abbreviations are the capitals a project may write, beside the ones
+	// every project may.
+	abbreviations map[string]bool
 }
 
 // Describe turns rule lines into a Lint; a bad argument is an error.
@@ -169,6 +172,8 @@ func (rules *Lint) describe(rule config.Rule) error {
 		return rules.allowing(args)
 	case "words":
 		return rules.banning(args)
+	case "abbreviations":
+		return rules.abbreviating(args)
 	}
 	return fmt.Errorf("unknown lint %q", name)
 }
@@ -238,6 +243,30 @@ func (rules *Lint) banning(args []string) error {
 	return nil
 }
 
+// capitals is an abbreviation as a lint line may give one: capitals, and
+// digits after the first, as UTF8 is.
+var capitals = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
+
+// abbreviating reads the capitals a project may write, such as the FITS
+// keywords `BITPIX` and `NAXIS`. a line adds to those before it. a word that
+// is not in capitals is refused, naming it.
+func (rules *Lint) abbreviating(args []string) error {
+	if count.None(len(args)) {
+		return fmt.Errorf("lint abbreviations wants at least one word")
+	}
+	if rules.abbreviations == nil {
+		rules.abbreviations = map[string]bool{}
+	}
+	for _, word := range args {
+		if !capitals.MatchString(word) {
+			return fmt.Errorf("lint abbreviations takes capitals, "+
+				"not %q", word)
+		}
+		rules.abbreviations[word] = true
+	}
+	return nil
+}
+
 // testy returns true if the path is a test file: go's, or any file named
 // test_. Run skips test files unless Tests is set.
 func testy(path string) bool {
@@ -266,8 +295,9 @@ const (
 )
 
 // shouted returns the runs of capitals in a line that are shouting. it skips
-// allowed words, file names and anything inside backticks.
-func shouted(line string) []string {
+// allowed words, the project's abbreviations, file names and anything
+// inside backticks.
+func shouted(line string, abbreviations map[string]bool) []string {
 	var out []string
 	var ticks, last int
 	for _, span := range shout.FindAllStringIndex(line, every) {
@@ -275,7 +305,8 @@ func shouted(line string) []string {
 		ticks += strings.Count(line[last:start], "`")
 		last = start
 		word := line[start:end]
-		if !allowed[word] && !betweenTicks(ticks) && !named(line, end) {
+		if !allowed[word] && !abbreviations[word] &&
+			!betweenTicks(ticks) && !named(line, end) {
 			out = append(out, word)
 		}
 	}
@@ -784,7 +815,8 @@ func (rules Lint) shouts(
 				if blocky(line) {
 					continue
 				}
-				for _, word := range shouted(line) {
+				words := shouted(line, rules.abbreviations)
+				for _, word := range words {
 					out = append(out, Finding{
 						rel, at, "shouting", word, true,
 					})
@@ -876,7 +908,7 @@ func (rules Lint) docLine(rel string, at int, line string) []Finding {
 	}
 	if rules.shout && !strings.HasPrefix(line, "    ") &&
 		!strings.HasPrefix(line, "\t") {
-		for _, word := range shouted(line) {
+		for _, word := range shouted(line, rules.abbreviations) {
 			out = append(out, Finding{
 				rel, at, "shouting", word, true,
 			})

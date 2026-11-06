@@ -42,7 +42,9 @@ func TestBuildBinariesBuildsEachCommandStamped(t *testing.T) {
 			made += "-dirty"
 		}
 		stamp := "-X main.build=" + made + " -X main.built=" + when +
-			" -X 'main.stampedWho=jm/4b732342 on loft' -X main.stampedSids="
+			" -X 'main.who=jm/4b732342 on loft'" +
+			" -X 'main.stampedWho=jm/4b732342 on loft'" +
+			" -X main.sids= -X main.sessions= -X main.stampedSids="
 		stand := &asked{}
 		var out bytes.Buffer
 		if err := buildBinaries(work, blankConfig(),

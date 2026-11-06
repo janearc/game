@@ -1,5 +1,13 @@
 # changelog
 
+## v0.4.6 05 nov
+
+- `lint abbreviations A B`: the capitals a project may write in comments
+  and docs, beside the ones game allows everywhere. a line adds to those
+  before it, and a stack merges its members' lists. a word that is not
+  capitals is refused, naming it.
+- fixed `--who`
+
 ## v0.4.5
 
 - fixed false positive for session ids in sweep

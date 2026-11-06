@@ -237,6 +237,7 @@ func (step Step) Args() []string { return step.args }
 //	lint print             no fmt.Print outside package main
 //	lint exclaim           no exclamation marks in docs
 //	lint shout             capitals of five or more in comments, counted
+//	lint abbreviations A B the capitals a project may write; lines add up
 //	lint harden            privilege and unsafe file handling reported;
 //	                       release and verify refuse a harden finding
 //	lint words a b c       words banned from code and docs
@@ -297,7 +298,7 @@ func Strictest(sets ...[]Rule) []Rule {
 				if less(rule.args, was.args) {
 					held[key] = rule
 				}
-			case rule.name == "words":
+			case rule.name == "words", rule.name == "abbreviations":
 				held[key] = Rule{
 					name: rule.name,
 					args: union(was.args, rule.args),
@@ -391,6 +392,7 @@ var rules = []string{
 	"print",
 	"exclaim",
 	"shout",
+	"abbreviations",
 	"words",
 	"chain",
 	"commas",
